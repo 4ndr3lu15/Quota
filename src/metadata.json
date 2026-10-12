@@ -1,0 +1,10 @@
+{
+  "uuid": "quota@4ndr3lu15.github.io",
+  "name": "Quota",
+  "description": "Keep an eye on your AI plans from the top bar: Claude usage limits, OpenRouter spend, budgets and credit balance. Pick the account to show straight from the menu.",
+  "shell-version": ["46", "47", "48", "49", "50", "51"],
+  "url": "https://github.com/4ndr3lu15/Quota",
+  "settings-schema": "org.gnome.shell.extensions.quota",
+  "version": 1,
+  "version-name": "0.1.0"
+}

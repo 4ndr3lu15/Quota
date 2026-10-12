@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.quota"
+          path="/org/gnome/shell/extensions/quota/">
+    <!-- Top bar -->
+    <key name="panel-gauge" type="s">
+      <choices>
+        <choice value="ring"/>
+        <choice value="bar"/>
+        <choice value="none"/>
+      </choices>
+      <default>"ring"</default>
+      <summary>Top bar gauge</summary>
+      <description>How the top bar draws usage: a ring, a small bar, or no gauge at all.</description>
+    </key>
+    <key name="show-percentage" type="b">
+      <default>true</default>
+      <summary>Show the percentage</summary>
+      <description>Show the usage percentage next to the gauge in the top bar.</description>
+    </key>
+    <key name="show-reset" type="b">
+      <default>false</default>
+      <summary>Show the time until reset</summary>
+      <description>Show, in the top bar, how long until each window shown there resets. Windows that reset together share one countdown.</description>
+    </key>
+    <key name="show-icon" type="b">
+      <default>false</default>
+      <summary>Show the source icon</summary>
+      <description>Show the icon of the source being shown (Claude, OpenRouter) before the gauge.</description>
+    </key>
+    <key name="show-plan" type="b">
+      <default>false</default>
+      <summary>Show the plan or balance</summary>
+      <description>Show the plan (Claude: e.g. MAX) or the money that matters (OpenRouter: the balance, else today's spend) in the top bar.</description>
+    </key>
+    <key name="panel-windows" type="as">
+      <default>['worst']</default>
+      <summary>Claude windows in the top bar</summary>
+      <description>Which Claude usage windows the top bar shows, one gauge each, tagged "5h"/"7d"/model name when more than one is shown. Selectors: five-hour, seven-day, scoped (every per-model window), max (highest utilization), worst (the active limit closest to locking you out). Unknown selectors are ignored. Empty falls back to the first window. Other sources pick their own.</description>
+    </key>
+    <key name="panel-position" type="s">
+      <choices>
+        <choice value="left"/>
+        <choice value="center"/>
+        <choice value="right"/>
+      </choices>
+      <default>"right"</default>
+      <summary>Top bar section</summary>
+      <description>Which section of the top bar the indicator sits in.</description>
+    </key>
+    <key name="panel-index" type="i">
+      <range min="0" max="20"/>
+      <default>0</default>
+      <summary>Position within the section</summary>
+      <description>Where the indicator sits among the other items of its section; 0 is first.</description>
+    </key>
+
+    <!-- Behavior -->
+    <key name="quota-toggle-menu" type="as">
+      <default><![CDATA[[]]]></default>
+      <summary>Shortcut to open the menu</summary>
+      <description>Keyboard shortcut that opens and closes the menu. Empty means no shortcut. Named apart from other extensions' keys, since keybinding names are global in the shell.</description>
+    </key>
+    <key name="poll-seconds" type="i">
+      <range min="30" max="600"/>
+      <default>300</default>
+      <summary>Refresh interval</summary>
+      <description>How often, in seconds, to fetch usage.</description>
+    </key>
+
+    <!-- Accounts -->
+    <key name="profiles" type="s">
+      <default>'[]'</default>
+      <summary>Claude profiles</summary>
+      <description>JSON array of {id, label, configDir}, one per Claude Code profile (a directory such as ~/.claude or ~/.claude-work holding its own .credentials.json).</description>
+    </key>
+    <key name="profiles-initialized" type="b">
+      <default>false</default>
+      <summary>Whether the profile list has been seeded</summary>
+      <description>Set once auto-detection has filled "profiles" for the first time, so a list emptied on purpose is not filled again.</description>
+    </key>
+    <key name="profile-tokens" type="s">
+      <default>'{}'</default>
+      <summary>Per-profile sign-in tokens</summary>
+      <description>JSON object mapping a Claude profile id to the tokens of its in-app sign-in ({accessToken, refreshToken, expiresAt}), for accounts that do not use Claude Code.</description>
+    </key>
+    <key name="openrouter-accounts" type="s">
+      <default>'[]'</default>
+      <summary>OpenRouter accounts</summary>
+      <description>JSON array of {id, label}, one per OpenRouter account. Their API keys are kept in the keyring under the same id, never here.</description>
+    </key>
+    <key name="active-source" type="s">
+      <default>''</default>
+      <summary>Source shown</summary>
+      <description>Id of the Claude profile or OpenRouter account the top bar and menu show, picked from the menu. Empty, or an id that no longer exists, shows the first source.</description>
+    </key>
+  </schema>
+</schemalist>

@@ -1,0 +1,94 @@
+/* Quota follows the shell theme: text, menus and separators are the shell's
+   own, secondary text is that color at reduced opacity (set in extension.js),
+   and the meters use the system accent color. The only colors defined here
+   are for usage that needs attention. */
+
+/* ===== top bar ===== */
+.quota-panel,
+.quota-panel-block,
+.quota-panel-gauge {
+    spacing: 4px;
+}
+.quota-panel-groups,
+.quota-panel-group {
+    spacing: 8px;
+}
+
+/* The gauge is drawn in its foreground color: the panel's text color, like a
+   symbolic icon, until a level class below changes it. */
+.quota-gauge {
+    -quota-line-width: 2.5px;
+}
+.quota-gauge-ring {
+    width: 15px;
+    height: 15px;
+}
+.quota-gauge-bar {
+    width: 24px;
+    height: 16px;
+    -quota-line-width: 5px;
+}
+
+.quota-panel-pct,
+.quota-panel-reset {
+    font-feature-settings: "tnum";
+}
+.quota-panel-tag,
+.quota-panel-reset,
+.quota-panel-plan {
+    font-size: 0.85em;
+}
+
+/* The top bar is dark in both shell styles. */
+.quota-gauge.quota-warn,
+.quota-panel-pct.quota-warn {
+    color: #f6d32d;
+}
+.quota-gauge.quota-crit,
+.quota-panel-pct.quota-crit {
+    color: #ff7b63;
+}
+
+/* ===== menu ===== */
+/* Rows that only show something are not interactive, which the shell styles
+   as insensitive (faded). They are not disabled, so keep the normal text. */
+.popup-menu-item.quota-item:insensitive {
+    color: inherit;
+}
+.quota-meter {
+    min-width: 17em;
+    spacing: 6px;
+}
+.quota-meter-pct {
+    font-feature-settings: "tnum";
+}
+.quota-meter-track {
+    height: 6px;
+    border-radius: 99px;
+    background-color: rgba(128, 128, 128, 0.3);
+}
+.quota-meter-fill {
+    height: 6px;
+    border-radius: 99px;
+    background-color: #3584e4;
+    background-color: -st-accent-color;
+}
+
+.quota-info,
+.quota-lines,
+.quota-error,
+.quota-note,
+.quota-meter-caption,
+.quota-updated {
+    font-size: 0.9em;
+    max-width: 19em;
+}
+
+/* Mid-tone colors, readable on both the light and the dark menu. */
+.quota-meter-fill.quota-warn { background-color: #e5a50a; }
+.quota-meter-fill.quota-crit { background-color: #e01b24; }
+.quota-meter-pct.quota-warn,
+.quota-lines.quota-warn { color: #e5a50a; }
+.quota-meter-pct.quota-crit,
+.quota-lines.quota-crit,
+.quota-error { color: #ed333b; }
