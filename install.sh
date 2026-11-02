@@ -2,10 +2,10 @@
 # Add Quota (the GTK app and the GNOME Shell top-bar extension) to your session,
 # running straight from this source tree.
 set -eu
-# On NixOS the stable Quota is a Nix package (Dotfiles, nixos/monolito.nix): installing
-# means promoting this source there, and a launcher here would shadow it.
-if command -v monolito-promote >/dev/null 2>&1; then
-    echo "Quota is installed by Nix. Promote this source with: monolito-promote Quota" >&2
+# On NixOS Quota is a Nix package (Dotfiles, nixos/monolito.nix): a new version goes in with
+# Forge's Build my system, and a launcher here would shadow it.
+if [ -e /etc/NIXOS ]; then
+    echo "Quota is installed by Nix. Its new version goes in with Forge's Build my system." >&2
     exit 1
 fi
 

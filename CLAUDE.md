@@ -12,10 +12,10 @@ Where things stand (2026-10-12):
   or images to the README. Local renders go to `.screenshots/`, which is
   gitignored.
 - Developer machine: NixOS, GNOME Shell 51, Wayland. The extension you run
-  is the Nix package's (`monolito-promote Quota` takes a new snapshot); there
+  is the Nix package's (a commit, taken at Forge's Build my system); there
   is no `src/` link in `~/.local/share/gnome-shell/extensions` any more, and
   one there would shadow the package. Check code changes in the headless
-  test below, or promote and log out/in.
+  test below, or commit, build in Forge and log out/in.
 - GNOME 51 removed `St.BoxLayout`'s `vertical` property: use the `vbox()`
   helper in extension.js, never `vertical: true`.
 - `core.hooksPath` is set to `tools/git-hooks`.
