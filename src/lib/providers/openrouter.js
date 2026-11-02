@@ -6,8 +6,8 @@ import GLib from 'gi://GLib';
 import Soup from 'gi://Soup';
 
 import {UsageError, SignedOutError} from '../usageClient.js';
-import {lookupSecret} from '../secrets.js';
-import {normalizeOpenRouter, selectOpenRouterPanelWindows} from '../openrouterModel.js';
+import {lookupSecret, lookupMinitronKey} from '../secrets.js';
+import {normalizeOpenRouter} from '../openrouterModel.js';
 
 const KEY_URL = 'https://openrouter.ai/api/v1/key';
 const CREDITS_URL = 'https://openrouter.ai/api/v1/credits';
@@ -18,7 +18,6 @@ export class OpenRouterProvider {
     constructor(source) {
         this.source = source;
         this.kind = 'openrouter';
-        this.icon = 'openrouter-symbolic.svg';
         this.usageUrl = 'https://openrouter.ai/activity';
         this._session = new Soup.Session();
         this._session.timeout = 15;
@@ -54,12 +53,25 @@ export class OpenRouterProvider {
     }
 
     async fetch(cancellable) {
-        const [apiKey, mgmtKey] = await Promise.all([
-            lookupSecret(this.source.id, 'api', cancellable),
-            lookupSecret(this.source.id, 'management', cancellable),
-        ]);
-        if (!apiKey && !mgmtKey)
-            throw new SignedOutError('No API key yet. Add one in Settings → Accounts.');
+        // MINITRON's shared key is read fresh each time, so a key changed or
+        // removed in MINITRON shows up here on the next poll.
+        // An account of Quota's own with no key yet falls back to it too.
+        let [apiKey, mgmtKey] = this.source.shared
+            ? [null, null]
+            : await Promise.all([
+                lookupSecret(this.source.id, 'api', cancellable),
+                lookupSecret(this.source.id, 'management', cancellable),
+            ]);
+        this._fromMinitron = false;
+        if (!apiKey && !mgmtKey) {
+            apiKey = await lookupMinitronKey(cancellable);
+            this._fromMinitron = !!apiKey;
+        }
+        if (!apiKey && !mgmtKey) {
+            throw new SignedOutError(this.source.shared
+                ? 'MINITRON has no OpenRouter key anymore. Add one in MINITRON’s Preferences.'
+                : 'No API key yet. Add one in Settings → Accounts, or in MINITRON’s Preferences.');
+        }
 
         // The key endpoint describes whichever key calls it, so without a
         // regular key the management key stands in (it reports on itself).
@@ -85,20 +97,19 @@ export class OpenRouterProvider {
         }
         const label = keyRes.value?.data?.label;
         return {
-            subtitle: label ? `Key “${label}”` : null,
+            subtitle: this._fromMinitron ? 'Key shared from MINITRON'
+                : label ? `Key “${label}”` : null,
             tier: model.tier,
             windows: model.windows,
             lines,
         };
     }
 
-    panelWindows(windows) {
-        return selectOpenRouterPanelWindows(windows);
-    }
-
     describeError(e) {
         if (e instanceof UsageError && e.status === 401)
-            return 'OpenRouter rejected the API key. Check it in Settings → Accounts.';
+            return this.source.shared || this._fromMinitron
+                ? 'OpenRouter rejected MINITRON’s key. Check it in MINITRON’s Preferences.'
+                : 'OpenRouter rejected the API key. Check it in Settings → Accounts.';
         if (e instanceof UsageError && e.status === 429)
             return 'OpenRouter is rate limiting requests. Trying again shortly.';
         if (e instanceof UsageError && e.apiMessage())

@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+- **The Quota app**: a GNOME window (GTK 4, libadwaita) with a Usage page
+  (the status line, Claude limits and OpenRouter budgets with meters,
+  OpenRouter spend, and MINITRON's model cost per day) and a Logs page
+  (MINITRON's model calls by day and model, with prompt, time and cost).
+  Its main menu opens Atelier, MINITRON, Tasks and Conduit.
+- **Two colors**: the mark is green while you can work and red when out of
+  tokens; the top bar no longer shows a percentage beside it.
+- **MINITRON's OpenRouter key**: with no OpenRouter account of its own,
+  Quota reads the key MINITRON keeps in the keyring, live, and shows its
+  spend as a "MINITRON" account. Paste the key once, in MINITRON. Settings →
+  Accounts lists it read-only (last four characters). An OpenRouter account
+  of Quota's own with no key stored uses MINITRON's key too.
+- **The Monolito mark**: the top bar now shows only a small obelisk, colored
+  by whether you can work: green, red when out of tokens, dim while
+  loading, signed out or failing. Claude's 5-hour and weekly limits decide
+  the color; OpenRouter turns it red when a balance or budget is spent.
+  Darker tones in the light style, where the top bar is light.
+- **Everything at once**: the menu shows every account, no switcher. A
+  status line at the top says the state in words, then a Claude section and
+  an OpenRouter section (or "Add an OpenRouter Key…", which opens Settings
+  on the Accounts page), each with its own Open Usage Page, then Refresh,
+  Report… and Settings. Every account is polled, not only the one shown.
+- **Report…** in the menu opens the Monolito report popup.
+- **Fewer settings**: the gauge, percentage, time until reset, account
+  icon, plan and top bar limit options are gone with the gauge itself;
+  Settings keeps placement, the refresh interval, the shortcut and accounts.
+- Durations read "1 h 20 min".
+- Fixed: the menu's usage bars shrank by their own fraction on every
+  refresh or reopening (50% drew as 25%, then 12.5%).
+
 ## 0.1.0
 
 First release.

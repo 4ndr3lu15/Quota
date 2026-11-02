@@ -1,53 +1,29 @@
 /* Quota follows the shell theme: text, menus and separators are the shell's
    own, secondary text is that color at reduced opacity (set in extension.js),
    and the meters use the system accent color. The only colors defined here
-   are for usage that needs attention. */
+   are the two status colors of the Monolito mark and the warning colors of
+   usage that needs attention.
 
-/* ===== top bar ===== */
-.quota-panel,
-.quota-panel-block,
-.quota-panel-gauge {
-    spacing: 4px;
-}
-.quota-panel-groups,
-.quota-panel-group {
-    spacing: 8px;
-}
+   The colors here are for the dark shell style (and the fallback).
+   stylesheet-dark.css and stylesheet-light.css import this file, and the
+   shell picks one by style, reloading it when the style switches; the light
+   one darkens the mark's colors for the light top bar. */
 
-/* The gauge is drawn in its foreground color: the panel's text color, like a
-   symbolic icon, until a level class below changes it. */
-.quota-gauge {
-    -quota-line-width: 2.5px;
-}
-.quota-gauge-ring {
-    width: 15px;
-    height: 15px;
-}
-.quota-gauge-bar {
-    width: 24px;
+/* ===== the Monolito mark ===== */
+/* Drawn in its foreground color, like a symbolic icon. With no state class
+   (unknown) it keeps the theme's text color, drawn at half strength. */
+.quota-mark {
+    width: 16px;
     height: 16px;
-    -quota-line-width: 5px;
 }
 
-.quota-panel-pct,
-.quota-panel-reset {
-    font-feature-settings: "tnum";
-}
-.quota-panel-tag,
-.quota-panel-reset,
-.quota-panel-plan {
-    font-size: 0.85em;
-}
-
-/* The top bar is dark in both shell styles. */
-.quota-gauge.quota-warn,
-.quota-panel-pct.quota-warn {
-    color: #f6d32d;
-}
-.quota-gauge.quota-crit,
-.quota-panel-pct.quota-crit {
-    color: #ff7b63;
-}
+/* Two colors: green while you can work (the pace, tight or not, is told in
+   words in the menu), red when out of tokens. Bright, for the dark top bar
+   and the dark menu. */
+.quota-mark.quota-good,
+.quota-mark.quota-tight,
+.quota-mark.quota-critical { color: #57e389; }
+.quota-mark.quota-out { color: #f66151; }
 
 /* ===== menu ===== */
 /* Rows that only show something are not interactive, which the shell styles
@@ -55,6 +31,12 @@
 .popup-menu-item.quota-item:insensitive {
     color: inherit;
 }
+
+.quota-status-label {
+    font-weight: bold;
+    max-width: 19em;
+}
+
 .quota-meter {
     min-width: 17em;
     spacing: 6px;
@@ -84,7 +66,7 @@
     max-width: 19em;
 }
 
-/* Mid-tone colors, readable on both the light and the dark menu. */
+/* Mid-tones, readable on both the light and the dark menu. */
 .quota-meter-fill.quota-warn { background-color: #e5a50a; }
 .quota-meter-fill.quota-crit { background-color: #e01b24; }
 .quota-meter-pct.quota-warn,

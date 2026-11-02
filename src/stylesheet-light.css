@@ -1,0 +1,9 @@
+/* The light shell style: the top bar and the menu are light, so the
+   Monolito mark takes darker tones of the same two colors. Everything else
+   is stylesheet.css. */
+@import url("stylesheet.css");
+
+.quota-mark.quota-good,
+.quota-mark.quota-tight,
+.quota-mark.quota-critical { color: #1f9a5b; }
+.quota-mark.quota-out { color: #d11a24; }

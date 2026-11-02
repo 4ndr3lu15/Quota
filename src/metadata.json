@@ -1,7 +1,7 @@
 {
   "uuid": "quota@4ndr3lu15.github.io",
   "name": "Quota",
-  "description": "Keep an eye on your AI plans from the top bar: Claude usage limits, OpenRouter spend, budgets and credit balance. Pick the account to show straight from the menu.",
+  "description": "Keep an eye on your AI plans from the top bar: one Monolito mark that turns from green to red as your Claude limits run low, and every account in its menu, with Claude usage limits and OpenRouter spend, budgets and balance.",
   "shell-version": ["46", "47", "48", "49", "50", "51"],
   "url": "https://github.com/4ndr3lu15/Quota",
   "settings-schema": "org.gnome.shell.extensions.quota",

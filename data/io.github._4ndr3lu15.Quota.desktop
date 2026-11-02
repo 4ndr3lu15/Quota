@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Quota
+Comment=See how much of your AI plans is left, and what each model has cost
+Exec=quota
+Icon=io.github._4ndr3lu15.Quota
+Terminal=false
+Categories=Utility;GTK;GNOME;
+Keywords=usage;limits;quota;claude;openrouter;tokens;cost;spend;ai;monolito;
+StartupNotify=true
+StartupWMClass=io.github._4ndr3lu15.Quota

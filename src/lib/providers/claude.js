@@ -2,7 +2,7 @@
 // UsageClient and shaped by usageModel.js into the provider snapshot the view
 // renders. No shell imports.
 import {UsageClient, UsageError} from '../usageClient.js';
-import {normalizeWindows, normalizeSpend, selectPanelWindows} from '../usageModel.js';
+import {normalizeWindows, normalizeSpend} from '../usageModel.js';
 
 // Plan label: the API's raw token (`subscriptionType` from disk or
 // `organization_type` from the profile), prefix-stripped and cased — nothing
@@ -20,18 +20,15 @@ function tierLabel(plan, rateLimitTier) {
     return m ? `${base} ${m[1]}x` : base;
 }
 
-// {label, panelLabel}: the popup shows the whole label ("Max 20x"), the top
-// bar only its first word.
+// {label}: the plan as the menu's account line shows it ("Max 20x").
 function tier(plan, rateLimitTier) {
-    const label = tierLabel(plan, rateLimitTier);
-    return {label, panelLabel: label.split(' ')[0]};
+    return {label: tierLabel(plan, rateLimitTier)};
 }
 
 export class ClaudeProvider {
     constructor(source, settings) {
         this.source = source;
         this.kind = 'claude';
-        this.icon = 'claude-symbolic.svg';
         this.usageUrl = 'https://claude.ai/settings/usage';
         this._client = new UsageClient({configDir: source.configDir, settings, profileId: source.id});
     }
@@ -81,10 +78,6 @@ export class ClaudeProvider {
             snap.lines.push({text, level: spend.level});
         }
         return snap;
-    }
-
-    panelWindows(windows, selectors, worstScore) {
-        return selectPanelWindows(windows, selectors, worstScore);
     }
 
     describeError(e) {

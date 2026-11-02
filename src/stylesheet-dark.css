@@ -1,0 +1,3 @@
+/* The dark shell style: stylesheet.css as it is. A file of its own so the
+   shell reloads Quota's styles when the style switches. */
+@import url("stylesheet.css");

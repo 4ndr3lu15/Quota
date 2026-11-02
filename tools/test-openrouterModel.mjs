@@ -3,9 +3,8 @@
 //   node tools/test-openrouterModel.mjs
 import assert from 'node:assert/strict';
 import {
-    normalizeOpenRouter, selectOpenRouterPanelWindows, nextUtcReset, intervalSeconds, money,
+    normalizeOpenRouter, nextUtcReset, intervalSeconds, money,
 } from '../src/lib/openrouterModel.js';
-import {windowTag} from '../src/lib/usageModel.js';
 
 let passed = 0;
 const test = (name, fn) => {
@@ -73,19 +72,17 @@ test('an unlimited key with no budgets has no limit window', () => {
     assert.deepEqual(windows, []);
 });
 
-test('credits add a window, the balance and the panel label', () => {
+test('credits add a window and the balance', () => {
     const r = normalizeOpenRouter({...paidKey, budgets: [], limit: null}, {total_credits: 100.5, total_usage: 25.75});
     const cw = r.windows.find(w => w.role === 'credits');
     assert.ok(Math.abs(cw.utilization - 25.62189) < 1e-3);
     assert.equal(cw.detail, '$74.75 left of $100.50');
     assert.equal(r.balance, 74.75);
-    assert.equal(r.tier.panelLabel, '$74.75');
     assert.ok(r.lines.includes('Balance: $74.75'));
 });
 
-test('without credits the panel label is today\'s spend', () => {
+test('the plan and the spend lines', () => {
     const r = normalizeOpenRouter(paidKey);
-    assert.equal(r.tier.panelLabel, '$0.42 today');
     assert.equal(r.tier.label, 'Pay as you go');
     assert.equal(r.lines[0], 'Spent: $0.42 today · $3.10 this week · $5.00 this month');
 });
@@ -97,15 +94,6 @@ test('a free-tier key shows its daily free requests', () => {
     assert.equal(r.windows.length, 1);
     assert.equal(r.windows[0].utilization, 80);
     assert.equal(r.windows[0].detail, '40 of 50 requests');
-    assert.equal(windowTag(r.windows[0]), 'free');
-});
-
-test('the panel shows the blocking budget, else credits, else free requests', () => {
-    const a = normalizeOpenRouter(paidKey, {total_credits: 10, total_usage: 1});
-    assert.equal(selectOpenRouterPanelWindows(a.windows)[0].label, 'Workspace budget (daily)');
-    const b = normalizeOpenRouter({usage_daily: 1}, {total_credits: 10, total_usage: 1});
-    assert.equal(selectOpenRouterPanelWindows(b.windows)[0].key, 'or:credits');
-    assert.deepEqual(selectOpenRouterPanelWindows([]), []);
 });
 
 test('a spent budget is critical by the API\'s own numbers', () => {

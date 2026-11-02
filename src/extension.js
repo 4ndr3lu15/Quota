@@ -6,7 +6,6 @@ import Gio from 'gi://Gio';
 import Pango from 'gi://Pango';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
-import Cairo from 'cairo';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -15,13 +14,15 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {UsageError, SignedOutError} from './lib/usageClient.js';
 import {ensureProfiles} from './lib/profiles.js';
-import {groupPanelWindows, windowTag} from './lib/usageModel.js';
-import {loadSources, activeSource} from './lib/sources.js';
+import {loadSources, ensureAgyAccounts} from './lib/sources.js';
+import {lookupMinitronKey} from './lib/secrets.js';
 import {ClaudeProvider} from './lib/providers/claude.js';
+import {AgyProvider} from './lib/providers/agy.js';
 import {OpenRouterProvider} from './lib/providers/openrouter.js';
-
-// Severity levels, least to most severe.
-const LEVEL_RANK = {ok: 0, warn: 1, crit: 2};
+import {
+    maxLevel, judgeWindow, projectionNote, relativeReset, overallStatus,
+} from './lib/status.js';
+import {drawMark} from './lib/mark.js';
 
 // Collapse refreshes that land closer together than this. Opening the menu
 // triggers a refresh, and so does the poll timer; without a floor the two can
@@ -36,157 +37,22 @@ const STALLED_FETCH_MS = 2 * 60 * 1000;
 // shell style without a color of its own.
 const DIM_OPACITY = 170;
 
-// Severity from a raw utilization %: how full the bucket is right now.
-function utilLevel(util) {
-    if (util >= 90)
-        return 'crit';
-    if (util >= 75)
-        return 'warn';
-    return 'ok';
-}
+// The platforms, in menu order, with what their section says when no
+// account of that kind is set up.
+const KINDS = [
+    {kind: 'claude', name: 'Claude', addLabel: 'Add a Claude Account…'},
+    {kind: 'agy', name: 'Antigravity', addLabel: 'Add a Google Account…'},
+    {kind: 'openrouter', name: 'OpenRouter', addLabel: 'Add an OpenRouter Key…'},
+];
 
-// The more severe of two levels.
-function maxLevel(a, b) {
-    return LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b;
-}
-
-// Style class for a level that needs one: only warnings and critical levels
-// are colored; a calm level keeps the theme's own color.
+// Style class for a window level that needs one: only warnings and critical
+// levels are colored; a calm level keeps the theme's own color.
 function levelClass(level) {
     return level === 'warn' || level === 'crit' ? `quota-${level}` : null;
 }
 
 function classes(...names) {
     return names.filter(Boolean).join(' ');
-}
-
-// Projected end-of-window utilization at the current consumption rate. Returns
-// the larger of actual and projected, falling back to actual when the window
-// has barely started (too little signal) or reports no reset time.
-function projectedUtil(util, resetsAtIso, totalSeconds) {
-    const target = Date.parse(resetsAtIso ?? '');
-    if (Number.isNaN(target) || !totalSeconds)
-        return util;
-    const remaining = (target - Date.now()) / 1000;
-    if (remaining <= 0)
-        return util;
-    const elapsed = totalSeconds - remaining;
-    if (elapsed <= 0 || elapsed / totalSeconds < 0.05)
-        return util;
-    return Math.max(util, (util * totalSeconds) / elapsed);
-}
-
-// Seconds from now until utilization would hit 100% at the average rate so far
-// this window, but only when that exhaustion lands before the window resets
-// (i.e. the current pace really does overrun the limit). Returns null
-// otherwise, using the same early-window guard as projectedUtil so we don't
-// extrapolate from noise.
-function exhaustSeconds(util, resetsAtIso, totalSeconds) {
-    const target = Date.parse(resetsAtIso ?? '');
-    if (Number.isNaN(target) || !totalSeconds || util <= 0)
-        return null;
-    const remaining = (target - Date.now()) / 1000;
-    if (remaining <= 0)
-        return null;
-    const elapsed = totalSeconds - remaining;
-    if (elapsed <= 0 || elapsed / totalSeconds < 0.05)
-        return null;
-    const toExhaust = (elapsed * (100 - util)) / util;
-    return toExhaust > 0 && toExhaust < remaining ? toExhaust : null;
-}
-
-// Human-friendly duration trimmed to the two largest units: "30s", "45m",
-// "4h 21m", "2d 5h". sep sets what goes between the two units, e.g. '' for the
-// compact top bar form ("4h21m").
-function humanDuration(seconds, sep = ' ') {
-    const s = Math.max(0, Math.floor(seconds));
-    if (s < 60)
-        return `${s}s`;
-    const mins = Math.round(s / 60);
-    if (mins < 60)
-        return `${mins}m`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24)
-        return `${hrs}h${sep}${mins % 60}m`;
-    const days = Math.floor(hrs / 24);
-    return `${days}d${sep}${hrs % 24}h`;
-}
-
-// Being locked out for at least this fraction of the window makes a fast burn
-// critical. A shorter lockout (running out just before the reset) only
-// warrants a warning.
-const LOCKOUT_CRIT_FRAC = 0.10;
-
-// How long you'd be stuck at the limit before the window resets, in seconds, at
-// the current burn rate, or null when the pace doesn't run out before reset.
-function lockoutSeconds(util, resetsAtIso, totalSeconds) {
-    const exhaust = exhaustSeconds(util, resetsAtIso, totalSeconds);
-    if (exhaust === null)
-        return null;
-    const remaining = (Date.parse(resetsAtIso) - Date.now()) / 1000;
-    return Math.max(0, remaining - exhaust);
-}
-
-// Severity for a usage window, based on the *consequence* of the current burn
-// rather than the raw projected percentage. Critical is reserved for "out of
-// headroom now, or locked out for a meaningful stretch"; a burn that only just
-// overruns right before the reset stays a warning.
-function windowLevel(util, resetsAtIso, totalSeconds) {
-    // Floor: how full the bucket is right now, independent of timing.
-    let level = utilLevel(util);
-
-    const lockout = lockoutSeconds(util, resetsAtIso, totalSeconds);
-    if (lockout !== null) {
-        // Projected to run out before the reset: escalate by how long you'd be
-        // locked out, as a fraction of the whole window.
-        const projLevel = lockout >= totalSeconds * LOCKOUT_CRIT_FRAC ? 'crit' : 'warn';
-        level = maxLevel(level, projLevel);
-    } else if (projectedUtil(util, resetsAtIso, totalSeconds) >= 75) {
-        // Won't run out before the reset: a rising window can warn, but never
-        // go critical from projection alone.
-        level = maxLevel(level, 'warn');
-    }
-    return level;
-}
-
-// Caption note explaining the projection, tied to the same lockout threshold as
-// windowLevel so a warning never reads "running out fast".
-function projectionNote(util, resetsAtIso, totalSeconds) {
-    const lockout = lockoutSeconds(util, resetsAtIso, totalSeconds);
-    if (lockout !== null) {
-        if (lockout >= totalSeconds * LOCKOUT_CRIT_FRAC) {
-            const exhaust = exhaustSeconds(util, resetsAtIso, totalSeconds);
-            return `runs out in ~${humanDuration(exhaust)} at this pace`;
-        }
-        return 'may run out just before the reset';
-    }
-    const proj = projectedUtil(util, resetsAtIso, totalSeconds);
-    if (proj >= 75 && Math.round(proj) > Math.round(util))
-        return `on track for ~${Math.round(proj)}% by the reset`;
-    return '';
-}
-
-function relativeReset(iso) {
-    const target = Date.parse(iso);
-    if (Number.isNaN(target))
-        return '';
-    const diff = target - Date.now();
-    if (diff <= 0)
-        return 'Resetting…';
-    return `Resets in ${humanDuration(diff / 1000)}`;
-}
-
-// Compact "time until reset" for the top bar: magnitude only, no separator
-// between units ("4h21m"). Empty when the timestamp is missing or unparseable
-// so the label collapses instead of showing junk.
-function compactReset(iso) {
-    const target = Date.parse(iso);
-    if (Number.isNaN(target))
-        return '';
-    const diff = target - Date.now();
-    if (diff <= 0)
-        return 'now';
-    return humanDuration(diff / 1000, '');
 }
 
 // Lets a menu label wrap onto extra lines (up to its stylesheet max-width)
@@ -217,64 +83,57 @@ function vbox(params = {}) {
     return box;
 }
 
-// Assigns an actor property only when it changes. The top bar's values are
-// re-applied on every countdown tick and rarely differ, so this keeps an idle
-// tick from touching the actors at all.
+// Opens the Monolito report popup for Quota: Open("Quota", "") on the
+// MINITRON Shell extension's bus name, or the minitron://report link when
+// that name is not on the bus.
+function openReport() {
+    Gio.DBus.session.call(
+        'io.github._4ndr3lu15.Monolith.Report',
+        '/io/github/_4ndr3lu15/Monolith/Report',
+        'io.github._4ndr3lu15.Monolith.Report',
+        'Open', new GLib.Variant('(ss)', ['Quota', '']),
+        null, Gio.DBusCallFlags.NONE, -1, null,
+        (connection, result) => {
+            try {
+                connection.call_finish(result);
+            } catch {
+                try {
+                    Gio.AppInfo.launch_default_for_uri('minitron://report?app=Quota', null);
+                } catch (e) {
+                    console.warn(`Quota: could not open the report popup: ${e.message}`);
+                }
+            }
+        });
+}
+
+// Assigns an actor property only when it changes. Values are re-applied on
+// every countdown tick and rarely differ, so this keeps an idle tick from
+// touching the actors at all.
 function setIfChanged(actor, prop, value) {
     if (actor[prop] !== value)
         actor[prop] = value;
 }
 
-function sourceIcon(path, file) {
-    return Gio.icon_new_for_string(`${path}/icons/${file}`);
-}
-
-// The top bar's gauge: a ring or a short bar, drawn in the widget's own
-// foreground color, the way the shell's symbolic icons are. That color is the
-// panel's text color until the window gets warm or critical, when the level
-// class (stylesheet.css) changes it. The size and line width come from the
-// stylesheet too (`-quota-line-width`).
-const Gauge = GObject.registerClass(
-class QuotaGauge extends St.DrawingArea {
-    _init() {
+// The Monolito mark (lib/mark.js), drawn in the widget's own foreground
+// color the way the shell draws symbolic icons. The state class
+// (stylesheet.css) sets that color: bright ones in the top bar, which is
+// always dark, mid-tones in the menu. An unknown state keeps the theme's
+// text color, at half strength.
+const MonolitoMark = GObject.registerClass(
+class QuotaMonolitoMark extends St.DrawingArea {
+    _init(place) {
         super._init({y_align: Clutter.ActorAlign.CENTER});
-        this._shape = 'ring';
-        this._util = null;
-        this._level = null;
-        this._syncClass();
+        this._place = place;
+        this._state = null;
+        this.setState('unknown');
     }
 
-    setShape(shape) {
-        if (shape === this._shape)
+    setState(state) {
+        if (state === this._state)
             return;
-        this._shape = shape;
-        this._syncClass();
-    }
-
-    // Both setters run on every countdown tick with values that rarely
-    // change, so an unchanged value queues no repaint.
-    setValue(util, level) {
-        const clamped = Math.max(0, Math.min(100, util));
-        if (clamped === this._util && level === this._level)
-            return;
-        this._util = clamped;
-        this._level = level;
-        this._syncClass();
+        this._state = state;
+        this.style_class = classes('quota-mark', `quota-mark-${this._place}`, `quota-${state}`);
         this.queue_repaint();
-    }
-
-    setUnknown() {
-        if (this._util === null && this._level === null)
-            return;
-        this._util = null;
-        this._level = null;
-        this._syncClass();
-        this.queue_repaint();
-    }
-
-    _syncClass() {
-        setIfChanged(this, 'style_class',
-            classes('quota-gauge', `quota-gauge-${this._shape}`, levelClass(this._level)));
     }
 
     vfunc_style_changed() {
@@ -285,155 +144,12 @@ class QuotaGauge extends St.DrawingArea {
     vfunc_repaint() {
         const cr = this.get_context();
         const [w, h] = this.get_surface_size();
-        const node = this.get_theme_node();
-        const fg = node.get_foreground_color();
-        const rgb = [fg.red / 255, fg.green / 255, fg.blue / 255];
-        const alpha = fg.alpha / 255;
-        const line = node.get_length('-quota-line-width') || 2;
-        const frac = (this._util ?? 0) / 100;
-
-        cr.setLineCap(Cairo.LineCap.ROUND);
-        cr.setLineWidth(line);
-
-        if (this._shape === 'bar') {
-            const y = h / 2;
-            const x0 = line / 2;
-            const x1 = Math.max(x0, w - line / 2);
-            cr.setSourceRGBA(...rgb, alpha * 0.3);
-            cr.moveTo(x0, y);
-            cr.lineTo(x1, y);
-            cr.stroke();
-            if (frac > 0) {
-                cr.setSourceRGBA(...rgb, alpha);
-                cr.moveTo(x0, y);
-                cr.lineTo(x0 + frac * (x1 - x0), y);
-                cr.stroke();
-            }
-        } else {
-            const radius = Math.max(0, Math.min(w, h) / 2 - line / 2);
-            const start = -Math.PI / 2;
-            cr.setSourceRGBA(...rgb, alpha * 0.3);
-            cr.arc(w / 2, h / 2, radius, 0, 2 * Math.PI);
-            cr.stroke();
-            if (frac > 0) {
-                cr.setSourceRGBA(...rgb, alpha);
-                cr.arc(w / 2, h / 2, radius, start, start + frac * 2 * Math.PI);
-                cr.stroke();
-            }
-        }
+        const fg = this.get_theme_node().get_foreground_color();
+        const alpha = (fg.alpha / 255) * (this._state === 'unknown' ? 0.5 : 1);
+        drawMark(cr, w, h, [fg.red / 255, fg.green / 255, fg.blue / 255, alpha]);
         cr.$dispose();
     }
 });
-
-// One usage window in the top bar: an optional short tag ("5h", "7d",
-// "Fable"), shown when several windows share the bar, then the gauge and the
-// percentage.
-class PanelGauge {
-    constructor() {
-        this.root = new St.BoxLayout({style_class: 'quota-panel-gauge'});
-        this._tag = dimLabel({text: '', style_class: 'quota-panel-tag', y_align: Clutter.ActorAlign.CENTER});
-        this._tag.visible = false;
-        this._gauge = new Gauge();
-        this._pct = new St.Label({text: '…', style_class: 'quota-panel-pct', y_align: Clutter.ActorAlign.CENTER});
-        this.root.add_child(this._tag);
-        this.root.add_child(this._gauge);
-        this.root.add_child(this._pct);
-    }
-
-    setTag(text, visible) {
-        this._tag.text = text ?? '';
-        this._tag.visible = !!visible && this._tag.text !== '';
-    }
-
-    applySettings(settings) {
-        const shape = settings.get_string('panel-gauge');
-        this._gauge.visible = shape !== 'none';
-        if (shape !== 'none')
-            this._gauge.setShape(shape);
-        this._pct.visible = settings.get_boolean('show-percentage');
-    }
-
-    setValue(util, level) {
-        setIfChanged(this._pct, 'text', `${Math.round(util)}%`);
-        this._setPctLevel(level);
-        this._gauge.setValue(util, level);
-    }
-
-    setUnknown() {
-        setIfChanged(this._pct, 'text', '—');
-        this._setPctLevel(null);
-        this._gauge.setUnknown();
-    }
-
-    // A failed refresh: '!' in the warning color, until the next good fetch.
-    setError() {
-        setIfChanged(this._pct, 'text', '!');
-        this._setPctLevel('warn');
-        this._gauge.setUnknown();
-    }
-
-    _setPctLevel(level) {
-        setIfChanged(this._pct, 'style_class', classes('quota-panel-pct', levelClass(level)));
-    }
-
-    destroy() {
-        this._tag?.destroy();
-        this._gauge?.destroy();
-        this._pct?.destroy();
-        this.root?.destroy();
-        this._tag = null;
-        this._gauge = null;
-        this._pct = null;
-        this.root = null;
-    }
-}
-
-// A run of top bar gauges that reset together (see groupPanelWindows), then
-// one countdown for all of them. Most groups hold a single gauge; the 7-day
-// window and the per-model 7-day windows share one.
-class PanelGroup {
-    constructor(keys) {
-        this.root = new St.BoxLayout({style_class: 'quota-panel-group'});
-        this.gauges = new Map();
-        for (const key of keys) {
-            const gauge = new PanelGauge();
-            this.gauges.set(key, gauge);
-            this.root.add_child(gauge.root);
-        }
-        this._reset = dimLabel({text: '', style_class: 'quota-panel-reset', y_align: Clutter.ActorAlign.CENTER});
-        this._reset.visible = false;
-        this.root.add_child(this._reset);
-        this._showReset = false;
-    }
-
-    applySettings(settings) {
-        for (const gauge of this.gauges.values())
-            gauge.applySettings(settings);
-        this._showReset = settings.get_boolean('show-reset');
-        this._syncReset();
-    }
-
-    // The group's reset time (null: no countdown). Recomputed on every call,
-    // which is how the countdown ticks between polls.
-    setReset(iso) {
-        setIfChanged(this._reset, 'text', iso ? compactReset(iso) : '');
-        this._syncReset();
-    }
-
-    _syncReset() {
-        setIfChanged(this._reset, 'visible', this._showReset && this._reset.text !== '');
-    }
-
-    destroy() {
-        for (const gauge of this.gauges.values())
-            gauge.destroy();
-        this.gauges.clear();
-        this._reset?.destroy();
-        this.root?.destroy();
-        this._reset = null;
-        this.root = null;
-    }
-}
 
 // One usage window in the menu: a non-interactive row with the window's name
 // and percentage, a bar in the accent color (warning colors when it gets
@@ -455,7 +171,7 @@ class Meter {
         // The fill is a fraction of the track's allocated width, recomputed
         // whenever the track is laid out again.
         this._fraction = 0;
-        this._track.connectObject('notify::width', () => this._resizeFill(), this);
+        this._track.connectObject('notify::allocation', () => this._resizeFill(), this);
 
         this._caption = wrapLabel(dimLabel({text: '', style_class: 'quota-meter-caption'}));
 
@@ -468,30 +184,41 @@ class Meter {
     // The bar tracks actual utilization; the level (projection included)
     // only changes its color.
     setValue(util, caption, level) {
-        this._pct.text = `${Math.round(util)}%`;
-        this._pct.style_class = classes('quota-meter-pct', levelClass(level));
+        setIfChanged(this._pct, 'text', `${Math.round(util)}%`);
+        setIfChanged(this._pct, 'style_class', classes('quota-meter-pct', levelClass(level)));
         this._fraction = Math.max(0, Math.min(100, util)) / 100;
-        this._fill.style_class = classes('quota-meter-fill', levelClass(level));
+        setIfChanged(this._fill, 'style_class', classes('quota-meter-fill', levelClass(level)));
+        this._resizeFill();
+        setIfChanged(this._caption, 'text', caption ?? '');
+        this._caption.visible = !!caption;
+    }
+
+    // No share to show (credits never bought): an empty bar, the caption kept.
+    setMuted(caption) {
+        this._pct.text = '—';
+        this._pct.style_class = 'quota-meter-pct';
+        this._fill.style_class = 'quota-meter-fill';
+        this._fraction = 0;
         this._resizeFill();
         this._caption.text = caption ?? '';
         this._caption.visible = !!caption;
     }
 
-    setMuted() {
-        this._pct.text = '—';
-        this._pct.style_class = 'quota-meter-pct';
-        this._fraction = 0;
-        this._resizeFill();
-        this._caption.visible = false;
-    }
-
     setName(name) {
-        this._name.text = name;
+        setIfChanged(this._name, 'text', name);
     }
 
+    // Reads the track's last allocation, never get_width(): once the fill
+    // changes, the track awaits a relayout and get_width() answers with its
+    // preferred width, which is the fill's own, so each update shrank the
+    // bar by the fraction again (50% → 25% → 12.5%).
     _resizeFill() {
-        const w = this._track?.get_width() ?? 0;
-        this._fill.set_width(Math.round(this._fraction * w));
+        if (!this._track?.has_allocation())
+            return;
+        const box = this._track.get_allocation_box();
+        const w = Math.round(this._fraction * box.get_width());
+        if (this._fill.width !== w)
+            this._fill.set_width(w);
     }
 
     destroy() {
@@ -524,18 +251,26 @@ function textItem(styleClass, dim = false) {
     return [item, label];
 }
 
-// Everything shown for the source picked in the menu (a Claude profile or an
-// OpenRouter account): its provider, its block in the top bar, and its part of
-// the menu. The provider (lib/providers/) fetches a snapshot,
-// {subtitle, tier, windows, lines}, and this view renders it, whatever the
-// platform.
-class SourceView {
-    constructor(source, provider, settings, panelBox, menuSection) {
+// The section title for one account: the platform's name, or with several
+// accounts of a kind, the account's own name too ("Claude · Work"; a name
+// that already says the platform, like "OpenRouter 2", stands alone).
+function sectionTitle(kindName, label, several) {
+    if (!several || !label || label === kindName)
+        return kindName;
+    return label.startsWith(kindName) ? label : `${kindName} · ${label}`;
+}
+
+// One account's part of the menu (a Claude profile or an OpenRouter
+// account): a section header in the shell's own style, the account line, one
+// meter per usage window, info lines, and an error or signed-out note. The
+// provider (lib/providers/) fetches a snapshot, {subtitle, tier, windows,
+// lines}, and this renders it, whatever the platform.
+class SourceSection {
+    constructor(source, provider, title) {
         this.source = source;
         this._provider = provider;
-        this._settings = settings;
-        // Outcome of the last refresh ('ok' | 'error' | 'signed-out'), read by
-        // the indicator for the "Updated …" line.
+        // Outcome of the last refresh: null until the first one ends, then
+        // 'ok' | 'error' | 'signed-out'. overallStatus() reads it.
         this.lastResult = null;
         this._snap = null;
         this._subtitle = null;
@@ -545,67 +280,45 @@ class SourceView {
         // only when the API stops reporting that window.
         this._meters = new Map();
 
-        // ---- top bar: [groups of gauges] [plan or balance] ----
-        this._panelBlock = new St.BoxLayout({style_class: 'quota-panel-block'});
-        this._groupsBox = new St.BoxLayout({style_class: 'quota-panel-groups'});
-        this._plan = dimLabel({text: '', style_class: 'quota-panel-plan', y_align: Clutter.ActorAlign.CENTER});
-        this._plan.visible = false;
-        this._panelBlock.add_child(this._groupsBox);
-        this._panelBlock.add_child(this._plan);
-        panelBox.add_child(this._panelBlock);
-        this._groups = [];
-        // Signature of what the current layout was built from, so an
-        // unchanged top bar is not laid out again (see renderPanel).
-        this._layoutSig = null;
-
-        // ---- menu: account line, meters, info lines, error ----
+        this.section = new PopupMenu.PopupMenuSection();
+        this._header = new PopupMenu.PopupSeparatorMenuItem(title);
+        this.section.addMenuItem(this._header);
         [this._infoItem, this._info] = textItem('quota-info', true);
-        menuSection.addMenuItem(this._infoItem);
+        this.section.addMenuItem(this._infoItem);
         this._metersSection = new PopupMenu.PopupMenuSection();
-        menuSection.addMenuItem(this._metersSection);
+        this.section.addMenuItem(this._metersSection);
         [this._linesItem, this._lines] = textItem('quota-lines', true);
-        menuSection.addMenuItem(this._linesItem);
+        this.section.addMenuItem(this._linesItem);
         [this._errorItem, this._error] = textItem('quota-error');
-        menuSection.addMenuItem(this._errorItem);
-
-        this.renderPanel();
-    }
-
-    get icon() {
-        return this._provider.icon;
+        this.section.addMenuItem(this._errorItem);
     }
 
     get usageUrl() {
         return this._provider.usageUrl;
     }
 
-    applySettings() {
-        for (const group of this._groups)
-            group.applySettings(this._settings);
-        this._plan.visible = this._settings.get_boolean('show-plan') && this._plan.text !== '';
+    // What overallStatus() judges.
+    statusInput() {
+        return {
+            kind: this.source.kind,
+            label: this.source.label,
+            result: this.lastResult,
+            windows: this._windows,
+        };
     }
 
-    // "Account · Plan" under the source's name in the menu, and the plan (or
-    // balance) in the top bar. Called on every poll, so it only acts on a
-    // change.
+    // "Account · Plan" under the header. Called on every poll, so it only
+    // acts on a change.
     _setIdentity(subtitle, tier) {
         this._subtitle = subtitle ?? this._subtitle;
         this._tier = tier ?? this._tier;
         const info = [this._subtitle, this._tier?.label].filter(Boolean).join(' · ');
         setIfChanged(this._info, 'text', info);
         this._infoItem.visible = info !== '';
-        setIfChanged(this._plan, 'text', this._tier?.panelLabel ?? '');
-        this.applySettings();
-    }
-
-    _clearIdentity(subtitle) {
-        this._subtitle = subtitle;
-        this._tier = null;
-        this._setIdentity(subtitle, null);
     }
 
     // The tier the provider knows without the network (Claude reads it from
-    // disk), so the top bar is not blank until the first fetch.
+    // disk), so the account line is not blank until the first fetch.
     async applyQuickTier(cancellable) {
         try {
             const tier = await this._provider.quickTier();
@@ -617,7 +330,7 @@ class SourceView {
         }
     }
 
-    // Fetches this source's snapshot; never rejects (errors are reported
+    // Fetches this account's snapshot; never rejects (errors are reported
     // through _renderError).
     async refresh(cancellable) {
         let snap;
@@ -667,10 +380,7 @@ class SourceView {
         }
 
         this._renderLines(snap.lines);
-
-        // Before renderPanel: it keeps the '!' for as long as this says 'error'.
         this.lastResult = 'ok';
-        this.renderPanel();
     }
 
     // The provider's info lines (Claude's extra usage, OpenRouter's spend and
@@ -689,7 +399,7 @@ class SourceView {
         this._linesItem.visible = true;
     }
 
-    // Soonest reset among this source's windows, in seconds, or null.
+    // Soonest reset among this account's windows, in seconds, or null.
     soonestResetSeconds() {
         let soonest = null;
         for (const w of this._windows) {
@@ -703,113 +413,37 @@ class SourceView {
         return soonest;
     }
 
-    // Re-applies the last fetched usage so the time-derived parts move between
-    // polls: the reset countdowns and the pace colors. Nothing is fetched. The
-    // menu's meters only need it while the menu is open (the indicator also
-    // calls this the moment it opens).
-    refreshCountdowns(menuOpen) {
-        if (!this._snap)
-            return;
-        if (menuOpen) {
-            for (const {meter, w} of this._meters.values())
-                this._applyWindow(meter, w);
-        }
-        this.renderPanel();
+    // Re-applies the last fetched usage so the reset countdowns and pace
+    // colors move between polls. Nothing is fetched.
+    refreshCountdowns() {
+        for (const {meter, w} of this._meters.values())
+            this._applyWindow(meter, w);
     }
 
-    // The color reflects the consequence of the current pace (see
-    // windowLevel), floored at the API's own severity, so a window the API
-    // flags never reads calmer than the API says. The caption explains it.
+    // The color reflects the consequence of the current pace (judgeWindow),
+    // floored at the API's own severity; the caption says it in words.
     _applyWindow(meter, w) {
-        if (!w || !Number.isFinite(w.utilization)) {
-            meter.setMuted();
-            return;
-        }
-        const util = w.utilization;
-        let caption = w.resetsAt ? relativeReset(w.resetsAt)
-            : (util > 0 || w.detail ? '' : 'Not used yet');
+        const now = Date.now();
+        let caption = w.resetsAt ? relativeReset(w.resetsAt, now)
+            : (w.utilization > 0 || w.detail ? '' : 'Not used yet');
         // A money window says how much of what ("$1.20 of $5.00") first.
         if (w.detail)
             caption = caption ? `${w.detail} · ${caption}` : w.detail;
-        const note = projectionNote(util, w.resetsAt, w.totalSeconds);
+        if (!Number.isFinite(w.utilization)) {
+            meter.setMuted(w.detail ?? '');
+            return;
+        }
+        const note = projectionNote(w.utilization, w.resetsAt, w.totalSeconds, now);
         if (note)
             caption = caption ? `${caption} · ${note}` : note;
-        meter.setValue(util, caption, this._windowLevel(w));
-    }
-
-    _windowLevel(w) {
-        return maxLevel(windowLevel(w.utilization, w.resetsAt, w.totalSeconds), w.apiLevel);
-    }
-
-    // Which windows the top bar shows. Claude follows the panel-windows
-    // setting; other providers pick their own. 'worst' ranks by the computed
-    // severity, then utilization.
-    _panelWindows() {
-        return this._provider.panelWindows(this._windows, this._settings.get_strv('panel-windows'),
-            w => LEVEL_RANK[this._windowLevel(w)] * 1000 + (Number(w.utilization) || 0));
-    }
-
-    // Syncs the top bar with the selected windows. Runs after every poll, on
-    // setting changes, and on the countdown tick. The layout (which gauges,
-    // how they group, their tags) is only rebuilt when its signature changes;
-    // the values are then re-applied, which is cheap.
-    renderPanel() {
-        const sel = this._panelWindows();
-        // With nothing to show (no data yet, or signed out) one group holds a
-        // single placeholder gauge, keyed ''.
-        const groups = sel.length ? groupPanelWindows(sel) : [{windows: [], resetsAt: null}];
-        const keys = groups.map(g => (g.windows.length ? g.windows.map(w => w.key) : ['']));
-        const tagged = sel.length > 1;
-        const sig = JSON.stringify([tagged, groups.map(g => g.windows.map(w => [w.key, windowTag(w)]))]);
-        if (sig !== this._layoutSig) {
-            for (const group of this._groups)
-                group.destroy();
-            this._groups = keys.map(k => new PanelGroup(k));
-            this._groups.forEach((group, i) => {
-                this._groupsBox.add_child(group.root);
-                group.applySettings(this._settings);
-                for (const w of groups[i].windows)
-                    group.gauges.get(w.key).setTag(windowTag(w), tagged);
-            });
-            this._layoutSig = sig;
-        }
-        this._updatePanel(groups);
-    }
-
-    // Values, colors and countdowns. After a failed refresh every gauge reads
-    // '!' until a fetch succeeds again.
-    _updatePanel(groups) {
-        const failed = this.lastResult === 'error';
-        groups.forEach((g, i) => {
-            const group = this._groups[i];
-            group.setReset(failed ? null : g.resetsAt);
-            if (!g.windows.length) {
-                // The placeholder keeps its '…' until the first result is in.
-                const gauge = group.gauges.get('');
-                if (failed)
-                    gauge.setError();
-                else if (this.lastResult !== null)
-                    gauge.setUnknown();
-                return;
-            }
-            for (const w of g.windows) {
-                const gauge = group.gauges.get(w.key);
-                if (failed)
-                    gauge.setError();
-                else if (Number.isFinite(w.utilization))
-                    gauge.setValue(w.utilization, this._windowLevel(w));
-                else
-                    gauge.setUnknown();
-            }
-        });
+        meter.setValue(w.utilization, caption, judgeWindow(w, now));
     }
 
     _renderError(e) {
-        // A cancelled request means the view is being torn down; nothing to
-        // show.
+        // A cancelled request means the section is being torn down.
         if (e instanceof GLib.Error && e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
             return;
-        // No login for this source: a state, not a failure.
+        // No login for this account: a state, not a failure.
         if (e instanceof SignedOutError) {
             this._renderSignedOut(e);
             return;
@@ -821,7 +455,6 @@ class SourceView {
             return;
         }
         this.lastResult = 'error';
-        this.renderPanel();
         this._error.text = this._provider.describeError(e);
         this._error.style_class = 'quota-error';
         this._error.opacity = 255;
@@ -836,11 +469,11 @@ class SourceView {
         this._meters.clear();
         this._windows = [];
         this._snap = null;
-        this._clearIdentity('Signed out');
+        this._subtitle = null;
+        this._tier = null;
+        this._setIdentity(null, null);
         this._linesItem.visible = false;
-
         this.lastResult = 'signed-out';
-        this.renderPanel();
 
         this._error.text = e.message;
         this._error.style_class = 'quota-note';
@@ -852,13 +485,8 @@ class SourceView {
         for (const {meter} of this._meters.values())
             meter.destroy();
         this._meters.clear();
-        for (const group of this._groups)
-            group.destroy();
-        this._groups = [];
 
-        this._groupsBox?.destroy();
-        this._plan?.destroy();
-        this._panelBlock?.destroy();
+        this._header?.destroy();
         this._info?.destroy();
         this._infoItem?.destroy();
         this._metersSection?.destroy();
@@ -866,10 +494,9 @@ class SourceView {
         this._linesItem?.destroy();
         this._error?.destroy();
         this._errorItem?.destroy();
+        this.section?.destroy();
 
-        this._groupsBox = null;
-        this._plan = null;
-        this._panelBlock = null;
+        this._header = null;
         this._info = null;
         this._infoItem = null;
         this._metersSection = null;
@@ -877,6 +504,7 @@ class SourceView {
         this._linesItem = null;
         this._error = null;
         this._errorItem = null;
+        this.section = null;
         this._windows = [];
         this._snap = null;
         this._provider?.destroy();
@@ -888,11 +516,13 @@ class SourceView {
 function makeProvider(source, settings) {
     if (source.kind === 'openrouter')
         return new OpenRouterProvider(source);
+    if (source.kind === 'agy')
+        return new AgyProvider(source, settings);
     return new ClaudeProvider(source, settings);
 }
 
 // A menu item that does its work without closing the menu, so the result
-// shows up where you are looking (Refresh, picking a source).
+// shows up where you are looking (Refresh).
 const StayOpenItem = GObject.registerClass(
 class QuotaStayOpenItem extends PopupMenu.PopupMenuItem {
     _init(text, onActivate) {
@@ -912,31 +542,27 @@ class QuotaStayOpenItem extends PopupMenu.PopupMenuItem {
 
 const QuotaIndicator = GObject.registerClass(
 class QuotaIndicator extends PanelMenu.Button {
-    _init(path, settings, openPreferences) {
+    // openPreferences(page) opens Settings, on its Accounts page when page
+    // is 'accounts'.
+    _init(settings, openPreferences) {
         super._init(0.5, 'Quota');
 
-        this._path = path;
         this._settings = settings;
         this._openPreferences = openPreferences;
         this._busy = false;
         this._cancellable = new Gio.Cancellable();
         this._lastFetchMs = 0;
-        this._sources = [];
-        this._active = null;
-        this._view = null;
-        this._sourceItems = [];
+        this._sections = [];
+        // Rows each kind's part of the menu adds besides its accounts (Open
+        // Usage Page, or the add row when it has none).
+        this._kindItems = [];
         this._countdownTimer = null;
         this._timer = null;
+        this._minitronKey = false;
 
-        // ---- top bar: [source icon] [view block] ----
-        this._panelBox = new St.BoxLayout({style_class: 'quota-panel'});
-        this._icon = new St.Icon({
-            gicon: sourceIcon(path, 'quota-symbolic.svg'),
-            style_class: 'system-status-icon quota-panel-icon',
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._panelBox.add_child(this._icon);
-        this.add_child(this._panelBox);
+        // ---- top bar: the Monolito mark, nothing else ----
+        this._mark = new MonolitoMark('panel');
+        this.add_child(this._mark);
 
         this._buildMenu();
 
@@ -945,54 +571,54 @@ class QuotaIndicator extends PanelMenu.Button {
                 return;
             // The captions are not ticked while the menu is closed, and the
             // refresh below may be throttled, so bring them up to date first.
-            this._view?.refreshCountdowns(true);
+            this._tick();
             this._refresh();
+            // A key added in MINITRON since the last look appears as its
+            // OpenRouter account.
+            if (!this._minitronKey) {
+                const cancellable = this._cancellable;
+                this._checkMinitronKey(cancellable).then(() => {
+                    if (this._minitronKey && !cancellable.is_cancelled())
+                        this._reloadSources();
+                });
+            }
         }, this);
 
-        // Live-apply setting changes without a shell reload.
         this._settings.connectObject(
-            'changed::show-icon', () => this._applySettings(),
-            'changed::panel-gauge', () => this._applySettings(),
-            'changed::show-percentage', () => this._applySettings(),
-            'changed::show-plan', () => this._applySettings(),
-            'changed::show-reset', () => this._applySettings(),
-            'changed::panel-windows', () => this._view?.renderPanel(),
             'changed::poll-seconds', () => this._startTimer(),
-            // Sources added, removed or renamed in prefs (or a sign-in made
-            // there, which rewrites profile-tokens), or another one picked.
+            // Accounts added, removed or renamed in Settings (or a sign-in
+            // made there, which rewrites profile-tokens).
             'changed::profiles', () => this._reloadSources(),
+            'changed::agy-accounts', () => this._reloadSources(),
             'changed::openrouter-accounts', () => this._reloadSources(),
             'changed::profile-tokens', () => this._refresh(true),
-            'changed::active-source', () => this._showActive(),
             this);
 
+        this._syncStatus();
         this._initSources();
     }
 
     _buildMenu() {
-        // The source: a submenu to switch between sources when there are
-        // several, else a plain heading.
-        this._sourcesItem = new PopupMenu.PopupSubMenuMenuItem('', true);
-        this.menu.addMenuItem(this._sourcesItem);
-        this._headerItem = new PopupMenu.PopupImageMenuItem('', null,
-            {reactive: false, can_focus: false, style_class: 'quota-item'});
-        this.menu.addMenuItem(this._headerItem);
+        // The state in words, beside the mark in the same color.
+        this._statusItem = new PopupMenu.PopupBaseMenuItem(
+            {reactive: false, can_focus: false, style_class: 'quota-item quota-status'});
+        this._statusMark = new MonolitoMark('menu');
+        this._statusLabel = wrapLabel(new St.Label({text: '', style_class: 'quota-status-label', y_align: Clutter.ActorAlign.CENTER}));
+        this._statusItem.add_child(this._statusMark);
+        this._statusItem.add_child(this._statusLabel);
+        this.menu.addMenuItem(this._statusItem);
 
-        // The shown source's account line, meters and notes, rebuilt when
-        // another source is picked.
-        this._viewSection = new PopupMenu.PopupMenuSection();
-        this.menu.addMenuItem(this._viewSection);
+        // One part per platform, every account in it, rebuilt when the
+        // accounts change.
+        this._kindSections = new Map();
+        for (const {kind} of KINDS) {
+            const section = new PopupMenu.PopupMenuSection();
+            this._kindSections.set(kind, section);
+            this.menu.addMenuItem(section);
+        }
 
         this._separator = new PopupMenu.PopupSeparatorMenuItem();
         this.menu.addMenuItem(this._separator);
-
-        this._usageItem = new PopupMenu.PopupMenuItem('Open Usage Page');
-        this._usageItem.connectObject('activate', () => {
-            const url = this._view?.usageUrl;
-            if (url)
-                Gio.AppInfo.launch_default_for_uri(url, null);
-        }, this);
-        this.menu.addMenuItem(this._usageItem);
 
         this._refreshItem = new StayOpenItem('Refresh', () => this._refresh(true));
         this._updated = dimLabel({
@@ -1005,102 +631,111 @@ class QuotaIndicator extends PanelMenu.Button {
         this._refreshItem.add_child(this._updated);
         this.menu.addMenuItem(this._refreshItem);
 
+        // Report a bug or idea through the Monolito report popup (the
+        // MINITRON Shell extension); its link when that is not running.
+        this._reportItem = new PopupMenu.PopupMenuItem('Report…');
+        this._reportItem.connectObject('activate', () => openReport(), this);
+        this.menu.addMenuItem(this._reportItem);
+
         this._settingsItem = new PopupMenu.PopupMenuItem('Settings');
-        this._settingsItem.connectObject('activate', () => this._openPreferences?.(), this);
+        this._settingsItem.connectObject('activate', () => this._openPreferences?.(''), this);
         this.menu.addMenuItem(this._settingsItem);
     }
 
-    // One-time async setup: seeds the Claude profile list (auto-detection)
-    // if it is empty, then shows the sources.
+    // One-time async setup: seeds the Claude and Antigravity profile lists
+    // (auto-detection) if they are empty, then shows the accounts.
     async _initSources() {
         const cancellable = this._cancellable;
         await ensureProfiles(this._settings);
+        await ensureAgyAccounts(this._settings);
+        await this._checkMinitronKey(cancellable);
         if (cancellable.is_cancelled())
             return;
         this._reloadSources();
     }
 
-    // The list of sources changed: rebuild the switcher, then show the
-    // active one.
-    _reloadSources() {
-        this._destroySourceItems();
-        this._sources = loadSources(this._settings);
-        for (const source of this._sources) {
-            const item = new StayOpenItem(source.label, () => {
-                this._settings.set_string('active-source', source.id);
-                this._sourcesItem.menu.close(true);
-            });
-            item.setOrnament(PopupMenu.Ornament.NONE);
-            this._sourcesItem.menu.addMenuItem(item);
-            this._sourceItems.push({item, source});
+    // Whether MINITRON holds an OpenRouter key Quota can show (lib/sources.js).
+    // A keyring that cannot be read just means no shared account.
+    async _checkMinitronKey(cancellable) {
+        try {
+            this._minitronKey = !!await lookupMinitronKey(cancellable);
+        } catch {
+            this._minitronKey = false;
         }
-        this._showActive();
     }
 
-    // Shows the source picked in the menu (the first one when none is): its
-    // name and icon, a check mark in the switcher, and a fresh view.
-    _showActive() {
-        // A fetch still running for the previous source is dropped, so the
-        // new one is fetched right away instead of waiting for it.
+    // The accounts changed: rebuild every section (cancelling any fetch in
+    // flight) and fetch them all.
+    _reloadSources() {
         this._cancellable?.cancel();
         this._cancellable = new Gio.Cancellable();
         this._busy = false;
-        this._destroyView();
+        this._destroySections();
 
-        const active = activeSource(this._settings, this._sources);
-        this._active = active;
-        for (const {item, source} of this._sourceItems)
-            item.setOrnament(source === active ? PopupMenu.Ornament.CHECK : PopupMenu.Ornament.NONE);
-
-        const several = this._sources.length > 1;
-        this._sourcesItem.visible = several;
-        this._headerItem.visible = !several;
-        if (active) {
-            const provider = makeProvider(active, this._settings);
-            const gicon = sourceIcon(this._path, provider.icon);
-            this._sourcesItem.label.text = active.label;
-            this._sourcesItem.icon.gicon = gicon;
-            this._headerItem.label.text = active.label;
-            this._headerItem.setIcon(gicon);
-            this._icon.gicon = gicon;
-            this._view = new SourceView(active, provider, this._settings, this._panelBox, this._viewSection);
-            this._updated.text = '';
-        } else {
-            this._headerItem.label.text = 'No Accounts';
-            this._headerItem.setIcon(sourceIcon(this._path, 'quota-symbolic.svg'));
-            this._icon.gicon = sourceIcon(this._path, 'quota-symbolic.svg');
-            this._updated.text = '';
+        const sources = loadSources(this._settings, {minitronKey: this._minitronKey});
+        for (const {kind, name, addLabel} of KINDS) {
+            const parent = this._kindSections.get(kind);
+            const mine = sources.filter(s => s.kind === kind);
+            if (!mine.length) {
+                // Nothing set up: the platform's header and one quiet row
+                // that opens the Accounts page.
+                const header = new PopupMenu.PopupSeparatorMenuItem(name);
+                const add = new PopupMenu.PopupMenuItem(addLabel);
+                add.label.opacity = DIM_OPACITY;
+                add.connectObject('activate', () => this._openPreferences?.('accounts'), this);
+                parent.addMenuItem(header);
+                parent.addMenuItem(add);
+                this._kindItems.push(header, add);
+                continue;
+            }
+            let usageUrl = null;
+            for (const source of mine) {
+                const provider = makeProvider(source, this._settings);
+                const section = new SourceSection(source, provider,
+                    sectionTitle(name, source.label, mine.length > 1));
+                parent.addMenuItem(section.section);
+                this._sections.push(section);
+                usageUrl ??= section.usageUrl;
+                section.applyQuickTier(this._cancellable);
+            }
+            // One usage page per platform: every account of a kind shares it.
+            if (usageUrl) {
+                const item = new PopupMenu.PopupMenuItem('Open Usage Page');
+                item.connectObject('activate', () => Gio.AppInfo.launch_default_for_uri(usageUrl, null), this);
+                parent.addMenuItem(item);
+                this._kindItems.push(item);
+            }
         }
-        this._usageItem.visible = !!active;
-        this._refreshItem.visible = !!active;
-        this._settingsItem.label.text = active ? 'Settings' : 'Add an Account…';
-        this._applySettings();
-        this._view?.applyQuickTier(this._cancellable);
+
+        this._refreshItem.visible = this._sections.length > 0;
+        this._updated.text = '';
+        this._syncStatus();
         this._refresh(true);
         this._startTimer();
     }
 
-    _applySettings() {
-        // With nothing else in the top bar the icon is all there is to click.
-        this._icon.visible = !this._view || this._settings.get_boolean('show-icon')
-            || (this._settings.get_string('panel-gauge') === 'none'
-                && !this._settings.get_boolean('show-percentage'));
-        this._view?.applySettings();
-    }
-
-    _destroySourceItems() {
-        for (const {item} of this._sourceItems)
-            item.destroy();
-        this._sourceItems = [];
-    }
-
-    _destroyView() {
+    _destroySections() {
         if (this._countdownTimer) {
             GLib.source_remove(this._countdownTimer);
             this._countdownTimer = null;
         }
-        this._view?.destroy();
-        this._view = null;
+        for (const section of this._sections)
+            section.destroy();
+        this._sections = [];
+        for (const item of this._kindItems) {
+            item.disconnectObject(this);
+            item.destroy();
+        }
+        this._kindItems = [];
+    }
+
+    // The mark's color and the status line, from every account at once.
+    _syncStatus() {
+        const {state, text} = overallStatus(this._sections.map(s => s.statusInput()));
+        this._mark.setState(state);
+        this._statusMark.setState(state);
+        setIfChanged(this._statusLabel, 'text', text);
+        setIfChanged(this, 'accessible_name', `Quota: ${text}`);
     }
 
     _startTimer() {
@@ -1116,20 +751,20 @@ class QuotaIndicator extends PanelMenu.Button {
     }
 
     _renderUpdatedAt() {
-        const result = this._view?.lastResult;
-        if (result === 'ok')
+        const results = this._sections.map(s => s.lastResult);
+        if (results.includes('ok'))
             this._updated.text = `Updated ${GLib.DateTime.new_now_local().format('%H:%M')}`;
-        else if (result === 'error')
+        else if (results.includes('error'))
             this._updated.text = 'Update failed';
         else
             this._updated.text = '';
     }
 
-    // force bypasses the min-gap throttle (explicit actions like Refresh, a
-    // sign-in or switching sources); opening the menu and the poll timer go
-    // through it.
+    // Fetches every account at once. force bypasses the min-gap throttle
+    // (Refresh, a sign-in, accounts changed); opening the menu and the poll
+    // timer go through it.
     _refresh(force = false) {
-        if (!this._view)
+        if (!this._sections.length)
             return;
         // A fetch that never settles (a keyring that does not answer) must
         // not block every later one: past the stall limit it is dropped.
@@ -1146,7 +781,12 @@ class QuotaIndicator extends PanelMenu.Button {
         this._updated.text = 'Updating…';
 
         const cancellable = this._cancellable;
-        this._view.refresh(cancellable).finally(() => {
+        // Each account updates the status as soon as it answers.
+        const fetches = this._sections.map(section => section.refresh(cancellable).then(() => {
+            if (!cancellable.is_cancelled())
+                this._syncStatus();
+        }));
+        Promise.allSettled(fetches).then(() => {
             if (cancellable.is_cancelled())
                 return;
             this._busy = false;
@@ -1155,20 +795,30 @@ class QuotaIndicator extends PanelMenu.Button {
         });
     }
 
+    // Moves the time-derived parts between polls: the meters' reset
+    // countdowns (only while the menu shows them) and the status.
+    _tick() {
+        if (this.menu.isOpen) {
+            for (const section of this._sections)
+                section.refreshCountdowns();
+        }
+        this._syncStatus();
+    }
+
     // Ticks the countdowns between polls: every second once a reset is under
-    // 90s away, every 30s otherwise. Nothing is fetched here.
+    // 90 s away, every 30 s otherwise. Nothing is fetched here.
     _scheduleCountdown() {
         if (this._countdownTimer) {
             GLib.source_remove(this._countdownTimer);
             this._countdownTimer = null;
         }
-        const soonest = this._view?.soonestResetSeconds() ?? null;
-        if (soonest === null)
+        const resets = this._sections.map(s => s.soonestResetSeconds()).filter(s => s !== null);
+        if (!resets.length)
             return;
-        const interval = soonest < 90 ? 1 : 30;
+        const interval = Math.min(...resets) < 90 ? 1 : 30;
         this._countdownTimer = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, interval, () => {
             this._countdownTimer = null;
-            this._view?.refreshCountdowns(this.menu.isOpen);
+            this._tick();
             this._scheduleCountdown();
             return GLib.SOURCE_REMOVE;
         });
@@ -1186,32 +836,32 @@ class QuotaIndicator extends PanelMenu.Button {
         this.menu.disconnectObject(this);
         this._settings.disconnectObject(this);
         this._settings = null;
-        this._usageItem?.disconnectObject(this);
         this._settingsItem?.disconnectObject(this);
+        this._reportItem?.disconnectObject(this);
 
-        this._destroyView();
-        this._destroySourceItems();
+        this._destroySections();
+        for (const section of this._kindSections?.values() ?? [])
+            section.destroy();
+        this._kindSections = null;
 
+        this._statusMark?.destroy();
+        this._statusMark = null;
+        this._statusLabel?.destroy();
+        this._statusLabel = null;
+        this._statusItem?.destroy();
+        this._statusItem = null;
         this._updated?.destroy();
         this._updated = null;
         this._refreshItem?.destroy();
         this._refreshItem = null;
-        this._usageItem?.destroy();
-        this._usageItem = null;
         this._settingsItem?.destroy();
         this._settingsItem = null;
+        this._reportItem?.destroy();
+        this._reportItem = null;
         this._separator?.destroy();
         this._separator = null;
-        this._viewSection?.destroy();
-        this._viewSection = null;
-        this._headerItem?.destroy();
-        this._headerItem = null;
-        this._sourcesItem?.destroy();
-        this._sourcesItem = null;
-        this._icon?.destroy();
-        this._icon = null;
-        this._panelBox?.destroy();
-        this._panelBox = null;
+        this._mark?.destroy();
+        this._mark = null;
 
         super.destroy();
     }
@@ -1220,8 +870,12 @@ class QuotaIndicator extends PanelMenu.Button {
 export default class QuotaExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
-        this._indicator = new QuotaIndicator(
-            this.path, this._settings, () => this.openPreferences());
+        this._indicator = new QuotaIndicator(this._settings, page => {
+            // Settings opens on the page asked for (prefs.js reads the key
+            // and clears it).
+            this._settings.set_string('prefs-page', page);
+            this.openPreferences();
+        });
         // Watch both placement keys so a move applies at once.
         this._settings.connectObject(
             'changed::panel-position', () => this._place(),

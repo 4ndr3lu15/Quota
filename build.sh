@@ -79,6 +79,8 @@ mkdir -p "$OUT"
 gnome-extensions pack "$SRC" \
     --extra-source=lib \
     --extra-source=icons \
+    --extra-source=stylesheet-dark.css \
+    --extra-source=stylesheet-light.css \
     --schema="$SCHEMA" \
     --out-dir="$OUT" \
     --force

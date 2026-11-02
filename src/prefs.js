@@ -14,9 +14,12 @@ import {
 } from './lib/oauth.js';
 import {loadProfiles, saveProfiles, makeProfileId, labelForDirName, ensureProfiles} from './lib/profiles.js';
 import {getToken, setToken, clearToken} from './lib/tokenStore.js';
-import {PANEL_SELECTORS} from './lib/usageModel.js';
-import {loadOpenRouterAccounts, saveOpenRouterAccounts, makeAccountId} from './lib/sources.js';
-import {lookupSecret, storeSecret, clearSecret} from './lib/secrets.js';
+import {
+    loadOpenRouterAccounts, saveOpenRouterAccounts, makeAccountId,
+    loadAgyAccounts, saveAgyAccounts, makeAgyAccountId, ensureAgyAccounts, defaultAgyConfigDir,
+} from './lib/sources.js';
+import {agyCredentialsAvailable} from './lib/providers/agy.js';
+import {lookupSecret, storeSecret, clearSecret, lookupMinitronKey} from './lib/secrets.js';
 
 // Keys that type nothing, so binding them without a modifier steals no input:
 // the function keys (F1-F35, contiguous) and the XF86 media/extra keys, which
@@ -118,24 +121,6 @@ export default class QuotaPreferences extends ExtensionPreferences {
         });
         window.add(accounts);
 
-        // ---- what the top bar shows ----
-        const topBar = new Adw.PreferencesGroup({title: 'Top Bar'});
-        general.add(topBar);
-        topBar.add(this._comboRow(settings, 'panel-gauge', 'Gauge', '',
-            [['ring', 'Ring'], ['bar', 'Bar'], ['none', 'None']]));
-        for (const [key, title, subtitle] of [
-            ['show-percentage', 'Percentage', ''],
-            ['show-reset', 'Time Until Reset', ''],
-            ['show-icon', 'Account Icon', 'Shows which account the numbers are for'],
-            ['show-plan', 'Plan or Balance', 'Claude: the plan. OpenRouter: the balance, or today\u2019s spend.'],
-        ]) {
-            const row = new Adw.SwitchRow({title, subtitle});
-            topBar.add(row);
-            settings.bind(key, row, 'active', Gio.SettingsBindFlags.DEFAULT);
-        }
-
-        this._addPanelWindowsGroup(general, settings);
-
         // ---- where it sits ----
         const placement = new Adw.PreferencesGroup({title: 'Placement'});
         general.add(placement);
@@ -165,7 +150,19 @@ export default class QuotaPreferences extends ExtensionPreferences {
 
         // ---- accounts ----
         await this._addProfilesGroup(accounts, settings, window);
+        await this._addAgyGroup(accounts, settings, window);
         this._addOpenRouterGroup(accounts, settings);
+
+        // The menu asks for a page through prefs-page ("Add an OpenRouter
+        // Key…" wants Accounts), also when this window is already open.
+        const showPage = () => {
+            if (settings.get_string('prefs-page') === 'accounts')
+                window.set_visible_page(accounts);
+            if (settings.get_string('prefs-page') !== '')
+                settings.set_string('prefs-page', '');
+        };
+        showPage();
+        this._watch(settings, 'changed::prefs-page', showPage);
     }
 
     // Connects a settings signal that the window's close-request drops.
@@ -187,48 +184,6 @@ export default class QuotaPreferences extends ExtensionPreferences {
         row.connect('notify::selected', () => settings.set_string(key, choices[row.selected][0]));
         this._watch(settings, `changed::${key}`, sync);
         return row;
-    }
-
-    // One switch per selector of the panel-windows list (any combination; the
-    // top bar shows one gauge per matched window, tagged when there are
-    // several). Kept in sync both ways; GTK does not re-notify an unchanged
-    // `active`, so the round trip settles.
-    _addPanelWindowsGroup(page, settings) {
-        const group = new Adw.PreferencesGroup({
-            title: 'Claude Limits in the Top Bar',
-            description: 'Turn on several to show them side by side. Other accounts show the limit that runs out first.',
-        });
-        page.add(group);
-
-        const rows = [
-            ['worst', 'Closest to Running Out', 'Takes the pace into account'],
-            ['max', 'Most Used', 'The limit with the highest usage'],
-            ['five-hour', '5-Hour Limit', ''],
-            ['seven-day', 'Weekly Limit', 'All models'],
-            ['scoped', 'Per-Model Weekly Limits', ''],
-        ];
-        const switches = new Map();
-        const selected = () => new Set(settings.get_strv('panel-windows'));
-        let syncing = false;
-        for (const [key, title, subtitle] of rows) {
-            const row = new Adw.SwitchRow({title, subtitle});
-            row.active = selected().has(key);
-            row.connect('notify::active', () => {
-                if (syncing)
-                    return;
-                const on = PANEL_SELECTORS.filter(k => switches.get(k)?.active);
-                settings.set_strv('panel-windows', on);
-            });
-            switches.set(key, row);
-            group.add(row);
-        }
-        this._watch(settings, 'changed::panel-windows', () => {
-            const on = selected();
-            syncing = true;
-            for (const [key, row] of switches)
-                row.active = on.has(key);
-            syncing = false;
-        });
     }
 
     // Adds a "Claude profiles" group: one expandable row per configured
@@ -337,6 +292,117 @@ export default class QuotaPreferences extends ExtensionPreferences {
         };
 
         await ensureProfiles(settings);
+        rerender();
+    }
+
+    // Adds the "Antigravity (Google AI)" group: one expandable row per account
+    // (name, config folder, status from agy login, and remove).
+    async _addAgyGroup(page, settings, window) {
+        const group = new Adw.PreferencesGroup({
+            title: 'Antigravity (Google AI)',
+            description: 'Google AI Pro and Ultra subscriptions signed in with Antigravity (`agy auth login`) ' +
+                'are found automatically in ~/.gemini/antigravity-cli or your keyring.',
+        });
+        page.add(group);
+
+        let rows = [];
+        const rerender = () => {
+            for (const row of rows)
+                group.remove(row);
+            const list = loadAgyAccounts(settings);
+            rows = list.map(a => buildAgyRow(a));
+            rows.push(buildAddRow());
+        };
+
+        const persist = list => {
+            saveAgyAccounts(settings, list);
+            Gio.Settings.sync();
+            rerender();
+        };
+
+        const buildAgyRow = account => {
+            const row = new Adw.ExpanderRow({title: account.label, subtitle: tildePath(account.configDir)});
+            group.add(row);
+
+            const nameRow = new Adw.EntryRow({title: 'Name', text: account.label, show_apply_button: true});
+            nameRow.connect('apply', () => {
+                const list = loadAgyAccounts(settings);
+                const a = list.find(x => x.id === account.id);
+                if (a) {
+                    a.label = nameRow.get_text().trim() || a.label;
+                    persist(list);
+                }
+            });
+            row.add_row(nameRow);
+
+            const folderRow = new Adw.ActionRow({title: 'Config Folder', subtitle: tildePath(account.configDir)});
+            const changeBtn = new Gtk.Button({label: 'Change…', valign: Gtk.Align.CENTER, css_classes: ['flat']});
+            changeBtn.connect('clicked', async () => {
+                const dir = await pickFolder(window, account.configDir);
+                if (!dir)
+                    return;
+                const list = loadAgyAccounts(settings);
+                const a = list.find(x => x.id === account.id);
+                if (a) {
+                    a.configDir = dir;
+                    persist(list);
+                }
+            });
+            folderRow.add_suffix(changeBtn);
+            row.add_row(folderRow);
+
+            const statusRow = new Adw.ActionRow({title: 'Sign-In'});
+            const statusLabel = new Gtk.Label({valign: Gtk.Align.CENTER});
+            statusRow.add_suffix(statusLabel);
+            row.add_row(statusRow);
+            agyCredentialsAvailable(account.configDir).then(ok => {
+                statusLabel.set_label(ok ? 'Using Antigravity CLI' : 'Run `agy auth login`');
+                statusLabel.set_css_classes(ok ? ['success'] : ['dim-label']);
+            });
+
+            const removeRow = new Adw.ActionRow({title: 'Remove Account'});
+            const removeBtn = new Gtk.Button({
+                label: 'Remove', valign: Gtk.Align.CENTER, css_classes: ['destructive-action'],
+            });
+            removeBtn.connect('clicked', () => {
+                clearToken(settings, account.id);
+                persist(loadAgyAccounts(settings).filter(x => x.id !== account.id));
+            });
+            removeRow.add_suffix(removeBtn);
+            row.add_row(removeRow);
+
+            return row;
+        };
+
+        const buildAddRow = () => {
+            const row = addRow('Add Google Antigravity Account…', async () => {
+                const list = loadAgyAccounts(settings);
+                if (!list.length) {
+                    list.push({
+                        id: makeAgyAccountId(),
+                        label: 'Google AI',
+                        configDir: defaultAgyConfigDir(),
+                    });
+                    persist(list);
+                    return;
+                }
+                const dir = await pickFolder(window, GLib.get_home_dir());
+                if (!dir)
+                    return;
+                if (list.some(a => a.configDir === dir))
+                    return;
+                list.push({
+                    id: makeAgyAccountId(),
+                    label: `Google AI ${list.length + 1}`,
+                    configDir: dir,
+                });
+                persist(list);
+            });
+            group.add(row);
+            return row;
+        };
+
+        await ensureAgyAccounts(settings);
         rerender();
     }
 
@@ -466,8 +532,23 @@ export default class QuotaPreferences extends ExtensionPreferences {
         const rerender = () => {
             for (const row of rows)
                 group.remove(row);
-            rows = loadOpenRouterAccounts(settings).map(buildAccountRow);
+            const accounts = loadOpenRouterAccounts(settings);
+            rows = accounts.map(buildAccountRow);
+            rows.push(buildMinitronRow());
             rows.push(buildAddRow());
+        };
+
+        // MINITRON's key, shown read-only: it is pasted in MINITRON, and Quota
+        // uses it for any account below that has no key of its own.
+        const buildMinitronRow = () => {
+            const row = new Adw.ActionRow({title: 'MINITRON', subtitle: 'Looking for MINITRON’s key…'});
+            group.add(row);
+            lookupMinitronKey().then(key => {
+                row.set_subtitle(key
+                    ? `Shared from MINITRON (\u2026${key.slice(-4)}). Used by any account without its own key.`
+                    : 'No key in MINITRON. Add one in MINITRON’s Preferences, or add an account below.');
+            }).catch(() => row.set_subtitle('Keyring unavailable'));
+            return row;
         };
         const persist = accounts => {
             saveOpenRouterAccounts(settings, accounts);

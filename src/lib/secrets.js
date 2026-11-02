@@ -12,6 +12,20 @@ const SCHEMA = new Secret.Schema(
     Secret.SchemaFlags.NONE,
     {account: Secret.SchemaAttributeType.STRING, kind: Secret.SchemaAttributeType.STRING});
 
+// MINITRON's own entry for its OpenRouter key (Minitron/minitron/secrets.py).
+// Quota only reads it: the key is pasted once, in MINITRON, and both apps see it.
+const MINITRON_SCHEMA = new Secret.Schema(
+    'io.github._4ndr3lu15.Atelier.ApiKey',
+    Secret.SchemaFlags.NONE,
+    {provider: Secret.SchemaAttributeType.STRING});
+
+// Antigravity CLI (agy) stores its Google OAuth JSON token in the keyring
+// via go-keyring (org.freedesktop.Secret.Generic, service="gemini").
+const AGY_SCHEMA = new Secret.Schema(
+    'org.freedesktop.Secret.Generic',
+    Secret.SchemaFlags.NONE,
+    {service: Secret.SchemaAttributeType.STRING, username: Secret.SchemaAttributeType.STRING});
+
 function attrs(account, kind) {
     return {account: String(account), kind: String(kind)};
 }
@@ -25,6 +39,25 @@ export class KeyringError extends Error {}
 // The stored key, or null when there is none. Rejects with a KeyringError when
 // the keyring cannot be reached or does not answer in time.
 export function lookupSecret(account, kind, cancellable = null) {
+    return lookup(SCHEMA, attrs(account, kind), cancellable);
+}
+
+// MINITRON's OpenRouter key, or null when MINITRON has none.
+export function lookupMinitronKey(cancellable = null) {
+    return lookup(MINITRON_SCHEMA, {provider: 'openrouter'}, cancellable);
+}
+
+// Antigravity's stored OAuth token JSON from the keyring, or null when absent.
+export async function lookupAgyToken(cancellable = null) {
+    for (const username of ['antigravity', 'antigravity-oauth-token', 'jetski-standalone-oauth-token']) {
+        const val = await lookup(AGY_SCHEMA, {service: 'gemini', username}, cancellable);
+        if (val)
+            return val;
+    }
+    return null;
+}
+
+function lookup(schema, attributes, cancellable) {
     return new Promise((resolve, reject) => {
         // Our own cancellable, so the timeout can stop the lookup; it follows
         // the caller's.
@@ -44,7 +77,7 @@ export function lookupSecret(account, kind, cancellable = null) {
             timer = 0;
             own.cancel();
         }) ?? 0;
-        Secret.password_lookup(SCHEMA, attrs(account, kind), own, (_s, res) => {
+        Secret.password_lookup(schema, attributes, own, (_s, res) => {
             if (timer)
                 GLib.source_remove(timer);
             if (linked)

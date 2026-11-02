@@ -1,0 +1,19 @@
+/* Quota: named colors only, so the accent and the dark style follow GNOME */
+
+/* the Monolito mark, like the top bar's: green while you can work, red when out */
+.quota-mark { color: alpha(@window_fg_color, 0.5); }
+.quota-mark.good { color: @success_color; }
+.quota-mark.out { color: @error_color; }
+
+row.quota-status .title { font-weight: bold; }
+
+/* meters: the accent, then warning and error colors as a window gets close */
+levelbar.quota-meter { min-width: 120px; }
+levelbar.quota-meter block.filled { background-color: @accent_bg_color; }
+levelbar.quota-meter.warn block.filled { background-color: @warning_bg_color; }
+levelbar.quota-meter.crit block.filled { background-color: @error_bg_color; }
+.quota-pct { font-feature-settings: "tnum"; min-width: 3.5em; }
+.quota-pct.warn { color: @warning_color; }
+.quota-pct.crit { color: @error_color; }
+
+.quota-cost { font-feature-settings: "tnum"; }

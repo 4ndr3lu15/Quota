@@ -1,12 +1,12 @@
 // Pure data-shaping for OpenRouter: turns the GET /api/v1/key payload (and,
 // with a management key, GET /api/v1/credits) into the same normalised windows
-// the Claude model produces, so the panel gauges and popup meters render them
-// unchanged. No GI or shell imports, so it runs under plain `node`
+// the Claude model produces, so the menu's meters and the overall status
+// (status.js) treat them alike. No GI or shell imports, so it runs under plain `node`
 // (tools/test-openrouterModel.mjs).
 //
-// A window here is {key, label, tag, role, utilization, resetsAt, totalSeconds,
-// apiLevel, isActive, order, detail}: `tag` is the short panel tag, `detail` a
-// money caption for the popup meter ("$1.20 of $5.00").
+// A window here is {key, label, role, utilization, resetsAt, totalSeconds,
+// apiLevel, isActive, order, detail}: `detail` is a money caption for the
+// menu's meter ("$1.20 of $5.00").
 
 const DAY = 24 * 3600;
 const INTERVAL_SECONDS = {daily: DAY, weekly: 7 * DAY};
@@ -20,7 +20,6 @@ const SCOPE_LABEL = {
     workspace_default_key: 'Default key budget',
 };
 
-const INTERVAL_TAG = {daily: '1d', weekly: '7d', monthly: '1mo'};
 const INTERVAL_WORD = {daily: 'daily', weekly: 'weekly', monthly: 'monthly'};
 
 export function money(v) {
@@ -84,7 +83,6 @@ function budgetWindow(b, i, effective) {
     return {
         key: `or:budget:${b.scope}:${b.budget_id ?? b.guardrail_id ?? i}:${interval ?? 'none'}`,
         label,
-        tag: INTERVAL_TAG[interval] ?? 'lim',
         role: 'budget',
         utilization: pct(b.spend_usd, b.limit_usd),
         resetsAt,
@@ -109,7 +107,6 @@ function keyLimitWindow(key) {
     return {
         key: 'or:key-limit',
         label: interval ? `Key limit (${INTERVAL_WORD[interval] ?? interval})` : 'Key limit',
-        tag: INTERVAL_TAG[interval] ?? 'lim',
         role: 'budget',
         utilization: pct(used, limit),
         resetsAt,
@@ -129,7 +126,6 @@ function creditsWindow(credits) {
     return {
         key: 'or:credits',
         label: 'Credits used',
-        tag: '$',
         role: 'credits',
         // Nothing bought yet: no share to show, so the meter reads muted.
         utilization: total > 0 ? Math.min(100, (used / total) * 100) : NaN,
@@ -150,7 +146,6 @@ function freeRequestsWindow(free) {
     return {
         key: 'or:free-requests',
         label: 'Free model requests (daily)',
-        tag: 'free',
         role: 'free',
         utilization: pct(used, limit),
         resetsAt: nextUtcReset('daily'),
@@ -165,7 +160,7 @@ function freeRequestsWindow(free) {
 // Everything the view shows for one OpenRouter account. `key` is the `data`
 // of GET /api/v1/key, `credits` the `data` of GET /api/v1/credits or null
 // (no management key, or it was refused).
-//   {windows, tier: {label, panelLabel}, lines: [string], balance}
+//   {windows, tier: {label}, lines: [string], balance}
 export function normalizeOpenRouter(key, credits = null) {
     const windows = [];
     const budgets = Array.isArray(key?.budgets) ? key.budgets : [];
@@ -209,25 +204,8 @@ export function normalizeOpenRouter(key, credits = null) {
 
     return {
         windows,
-        tier: {
-            label: key?.is_free_tier ? 'Free' : 'Pay as you go',
-            // The panel's text slot carries money, the number people watch:
-            // the balance when a management key reveals it, else today's spend.
-            panelLabel: balance !== null ? money(balance)
-                : money(key?.usage_daily) !== null ? `${money(key.usage_daily)} today` : '',
-        },
+        tier: {label: key?.is_free_tier ? 'Free' : 'Pay as you go'},
         lines,
         balance,
     };
-}
-
-// Which windows the panel shows for OpenRouter: the budget that blocks first
-// (or the key limit), else the credits, else the free requests. Several would
-// only repeat the same money; the popup lists them all.
-export function selectOpenRouterPanelWindows(windows) {
-    const pick = windows.find(w => w.role === 'budget' && w.isActive)
-        ?? windows.find(w => w.role === 'budget')
-        ?? windows.find(w => w.role === 'credits' && Number.isFinite(w.utilization))
-        ?? windows.find(w => w.role === 'free');
-    return pick ? [pick] : [];
 }

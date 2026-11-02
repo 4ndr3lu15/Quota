@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Quota: a gauge on a night-dark dial; its needle is the Monolito obelisk, resting in the green -->
+  <defs>
+    <linearGradient id="face" x1="0" y1="12" x2="0" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3d3846"/>
+      <stop offset="1" stop-color="#241f31"/>
+    </linearGradient>
+  </defs>
+  <!-- base and face -->
+  <rect x="8" y="16" width="112" height="100" rx="16" fill="#151219"/>
+  <rect x="8" y="12" width="112" height="96" rx="16" fill="url(#face)"/>
+  <!-- the dial: green, yellow, red -->
+  <g fill="none" stroke-width="10" stroke-linecap="round">
+    <path d="M18.11 90.79 A46 46 0 0 1 38.28 55.86" stroke="#33d17a"/>
+    <path d="M43.83 52.66 A46 46 0 0 1 84.17 52.66" stroke="#f6d32d"/>
+    <path d="M89.72 55.86 A46 46 0 0 1 109.89 90.79" stroke="#e01b24"/>
+  </g>
+  <!-- the needle: a Monolito obelisk, lit face and face in shade -->
+  <g transform="rotate(-40 64 94)">
+    <path d="M53 98 L55.5 62 L64 47 V98Z" fill="#ffffff"/>
+    <path d="M64 47 L72.5 62 L75 98 H64Z" fill="#deddda"/>
+    <path d="M55.5 62 L64 47 V62Z" fill="#f6f5f4"/>
+    <path d="M64 47 L72.5 62 H64Z" fill="#c0bfbc"/>
+  </g>
+  <!-- the hub -->
+  <circle cx="64" cy="94" r="9" fill="#5e5c64"/>
+  <circle cx="64" cy="93" r="6" fill="#9a9996"/>
+</svg>

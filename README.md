@@ -1,13 +1,35 @@
 # Quota
 
-Keep an eye on your AI plans from the GNOME top bar: how much of your Claude
-limits you have used and when they reset, or what you have spent on
-OpenRouter and what is left. One small gauge in the top bar, the details in
-its menu, and a switcher for when you have more than one account.
+Keep an eye on your AI plans from the GNOME top bar. Quota puts one small
+Monolito mark there, an obelisk whose color tells you at a glance whether
+you can work:
+
+- **green**: you can work;
+- **red**: out of tokens (a Claude limit used up, or an OpenRouter balance
+  or budget spent);
+- **dim**: not known yet (loading, signed out, or an error).
+
+Click it for the details, every account at once: a status line that says
+the same thing in words ("Pace is tight: 5-hour limit resets in 1 h 20 min"),
+your Claude limits with their reset times, and your OpenRouter spend and
+balance.
 
 Quota follows your shell: it uses the shell's own menus, your accent color,
-and the light or dark style. It only turns amber or red when a limit is
-actually getting close, taking your current pace into account.
+and the light or dark style. The color takes your current pace into account,
+not just the percentage.
+
+## The app
+
+For a closer look, the Quota app (GTK 4 and libadwaita) has two pages:
+
+- **Usage**: the same status line, every Claude limit and OpenRouter
+  budget with a meter, OpenRouter spend, and what MINITRON's model calls
+  cost per day over the last two weeks.
+- **Logs**: MINITRON's model calls by day, grouped by model, each with its
+  prompt, time, duration, context and cost. It follows the log as it grows.
+
+Run it from the source tree with `./quota-app`. The main menu opens the
+other Monolito apps (Atelier, MINITRON, Tasks, Conduit) through Atelier.
 
 ## Sources
 
@@ -49,9 +71,11 @@ gnome-extensions enable quota@4ndr3lu15.github.io
 On Wayland, log out and back in to load it. Tests:
 
 ```sh
+node tools/test-status.mjs
 node tools/test-usageModel.mjs
 node tools/test-openrouterModel.mjs
 node tools/test-tokenStore.mjs
+python3 -m pytest tests                                         # the app's GTK-free modules
 gjs -m tools/poll.js                                            # live Claude check
 OPENROUTER_API_KEY=sk-or-... gjs -m tools/poll-openrouter.js   # live OpenRouter check
 ```
