@@ -11,11 +11,11 @@ Where things stand (2026-10-12):
 - No screenshots in the repo, by choice. Do not add a `screenshots/` folder
   or images to the README. Local renders go to `.screenshots/`, which is
   gitignored.
-- Developer machine: Arch, GNOME Shell 51.0, Wayland. `src/` is symlinked to
-  `~/.local/share/gnome-shell/extensions/quota@4ndr3lu15.github.io` (the
-  link went stale once when the folder was renamed; check it if the
-  extension seems missing). Code changes need a log out/in (or the headless
-  test below).
+- Developer machine: NixOS, GNOME Shell 51, Wayland. The extension you run
+  is the Nix package's (`monolito-promote Quota` takes a new snapshot); there
+  is no `src/` link in `~/.local/share/gnome-shell/extensions` any more, and
+  one there would shadow the package. Check code changes in the headless
+  test below, or promote and log out/in.
 - GNOME 51 removed `St.BoxLayout`'s `vertical` property: use the `vbox()`
   helper in extension.js, never `vertical: true`.
 - `core.hooksPath` is set to `tools/git-hooks`.
