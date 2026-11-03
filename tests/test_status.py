@@ -100,5 +100,11 @@ def test_overall_agy_subscription():
     st = status.overall_status(agy, NOW)
     assert st["state"] == "critical"
     assert "Gemini 3.1 Pro limit at 92%" in st["text"]
+    # When Gemini has quota left (role=session) but Claude/GPT group is exhausted (role=quota, 100%),
+    # the Antigravity account reports out of tokens.
+    mixed = [{"kind": "agy", "label": "Google AI", "result": "ok",
+              "windows": [win("session", 8, 2 * H, FIVE, label="Gemini Models · 5-hour limit"),
+                          win("quota", 100, 2 * H, FIVE, label="Claude and GPT models · 5-hour limit")]}]
+    assert status.overall_status(mixed, NOW)["state"] == "out"
     signed_out = [{"kind": "agy", "label": "Google AI", "result": "signed-out", "windows": None}]
     assert status.overall_status(signed_out, NOW)["text"] == "Not signed in to Antigravity"

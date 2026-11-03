@@ -37,6 +37,13 @@ const STALLED_FETCH_MS = 2 * 60 * 1000;
 // shell style without a color of its own.
 const DIM_OPACITY = 170;
 
+// A two-finger swipe turns the page once it has moved this far sideways (in
+// Clutter's smooth-scroll steps, about 10 px of finger travel each), and
+// only once per gesture: events closer together than SWIPE_GAP_MS are the
+// same gesture.
+const SWIPE_STEPS = 3;
+const SWIPE_GAP_MS = 250;
+
 // The platforms, in menu order, with what their section says when no
 // account of that kind is set up.
 const KINDS = [
@@ -251,13 +258,13 @@ function textItem(styleClass, dim = false) {
     return [item, label];
 }
 
-// The section title for one account: the platform's name, or with several
-// accounts of a kind, the account's own name too ("Claude · Work"; a name
-// that already says the platform, like "OpenRouter 2", stands alone).
+// The section title for one account. The pager already names the platform,
+// so the only account of a kind has no header, and with several each is
+// headed by its own name ("Work", "OpenRouter 2").
 function sectionTitle(kindName, label, several) {
-    if (!several || !label || label === kindName)
-        return kindName;
-    return label.startsWith(kindName) ? label : `${kindName} · ${label}`;
+    if (!several)
+        return null;
+    return label || kindName;
 }
 
 // One account's part of the menu (a Claude profile or an OpenRouter
@@ -281,8 +288,10 @@ class SourceSection {
         this._meters = new Map();
 
         this.section = new PopupMenu.PopupMenuSection();
-        this._header = new PopupMenu.PopupSeparatorMenuItem(title);
-        this.section.addMenuItem(this._header);
+        // No title (the only account of its kind): the pager names the page.
+        this._header = title ? new PopupMenu.PopupSeparatorMenuItem(title) : null;
+        if (this._header)
+            this.section.addMenuItem(this._header);
         [this._infoItem, this._info] = textItem('quota-info', true);
         this.section.addMenuItem(this._infoItem);
         this._metersSection = new PopupMenu.PopupMenuSection();
@@ -521,6 +530,78 @@ function makeProvider(source, settings) {
     return new ClaudeProvider(source, settings);
 }
 
+// The row under the status line that picks the platform the menu shows,
+// like the calendar's month header: back and forward buttons around the
+// platform's name, with one dot per page below it. Pages wrap around.
+class Pager {
+    constructor(names, onStep) {
+        this._onStep = onStep;
+        this.item = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false, style_class: 'quota-item quota-pager'});
+
+        this._back = new St.Button({
+            style_class: 'icon-button flat quota-pager-button',
+            icon_name: 'pan-start-symbolic',
+            accessible_name: 'Previous Platform',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._back.connectObject('clicked', () => this._onStep?.(-1), this);
+
+        this._middle = vbox({style_class: 'quota-pager-middle', x_expand: true});
+        this._title = new St.Label({style_class: 'quota-pager-title', x_align: Clutter.ActorAlign.CENTER});
+        this._dotsBox = new St.BoxLayout({style_class: 'quota-pager-dots', x_align: Clutter.ActorAlign.CENTER});
+        this._dots = names.map(() => {
+            const dot = new St.Widget({style_class: 'quota-pager-dot', y_align: Clutter.ActorAlign.CENTER});
+            this._dotsBox.add_child(dot);
+            return dot;
+        });
+        this._middle.add_child(this._title);
+        this._middle.add_child(this._dotsBox);
+
+        this._forward = new St.Button({
+            style_class: 'icon-button flat quota-pager-button',
+            icon_name: 'pan-end-symbolic',
+            accessible_name: 'Next Platform',
+            can_focus: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._forward.connectObject('clicked', () => this._onStep?.(1), this);
+
+        this.item.add_child(this._back);
+        this.item.add_child(this._middle);
+        this.item.add_child(this._forward);
+        this._names = names;
+    }
+
+    show(index) {
+        setIfChanged(this._title, 'text', this._names[index]);
+        this._dots.forEach((dot, i) => {
+            setIfChanged(dot, 'style_class', classes('quota-pager-dot', i === index && 'quota-current'));
+        });
+    }
+
+    destroy() {
+        this._back?.disconnectObject(this);
+        this._forward?.disconnectObject(this);
+        for (const dot of this._dots ?? [])
+            dot.destroy();
+        this._dots = null;
+        this._dotsBox?.destroy();
+        this._dotsBox = null;
+        this._title?.destroy();
+        this._title = null;
+        this._middle?.destroy();
+        this._middle = null;
+        this._back?.destroy();
+        this._back = null;
+        this._forward?.destroy();
+        this._forward = null;
+        this.item?.destroy();
+        this.item = null;
+        this._onStep = null;
+    }
+}
+
 // A menu item that does its work without closing the menu, so the result
 // shows up where you are looking (Refresh).
 const StayOpenItem = GObject.registerClass(
@@ -559,6 +640,11 @@ class QuotaIndicator extends PanelMenu.Button {
         this._countdownTimer = null;
         this._timer = null;
         this._minitronKey = false;
+        // The platform the menu shows (an index into KINDS), and the
+        // two-finger swipe in progress.
+        const page = KINDS.findIndex(k => k.kind === this._settings.get_string('menu-page'));
+        this._page = Math.max(0, page);
+        this._swipe = {dx: 0, dy: 0, lastMs: 0, done: false};
 
         // ---- top bar: the Monolito mark, nothing else ----
         this._mark = new MonolitoMark('panel');
@@ -583,6 +669,9 @@ class QuotaIndicator extends PanelMenu.Button {
                 });
             }
         }, this);
+        // A sideways two-finger swipe (or a tilted wheel) anywhere on the
+        // menu turns the page.
+        this.menu.actor.connectObject('scroll-event', (_a, event) => this._onMenuScroll(event), this);
 
         this._settings.connectObject(
             'changed::poll-seconds', () => this._startTimer(),
@@ -608,14 +697,18 @@ class QuotaIndicator extends PanelMenu.Button {
         this._statusItem.add_child(this._statusLabel);
         this.menu.addMenuItem(this._statusItem);
 
-        // One part per platform, every account in it, rebuilt when the
-        // accounts change.
+        this._pager = new Pager(KINDS.map(k => k.name), step => this._turnPage(step));
+        this.menu.addMenuItem(this._pager.item);
+
+        // One page per platform, every account in it, rebuilt when the
+        // accounts change; only the current page is shown.
         this._kindSections = new Map();
         for (const {kind} of KINDS) {
             const section = new PopupMenu.PopupMenuSection();
             this._kindSections.set(kind, section);
             this.menu.addMenuItem(section);
         }
+        this._showPage();
 
         this._separator = new PopupMenu.PopupSeparatorMenuItem();
         this.menu.addMenuItem(this._separator);
@@ -677,15 +770,12 @@ class QuotaIndicator extends PanelMenu.Button {
             const parent = this._kindSections.get(kind);
             const mine = sources.filter(s => s.kind === kind);
             if (!mine.length) {
-                // Nothing set up: the platform's header and one quiet row
-                // that opens the Accounts page.
-                const header = new PopupMenu.PopupSeparatorMenuItem(name);
+                // Nothing set up: one quiet row that opens the Accounts page.
                 const add = new PopupMenu.PopupMenuItem(addLabel);
                 add.label.opacity = DIM_OPACITY;
                 add.connectObject('activate', () => this._openPreferences?.('accounts'), this);
-                parent.addMenuItem(header);
                 parent.addMenuItem(add);
-                this._kindItems.push(header, add);
+                this._kindItems.push(add);
                 continue;
             }
             let usageUrl = null;
@@ -712,6 +802,65 @@ class QuotaIndicator extends PanelMenu.Button {
         this._syncStatus();
         this._refresh(true);
         this._startTimer();
+    }
+
+    // Shows the current page's platform and hides the others.
+    _showPage() {
+        KINDS.forEach(({kind}, i) => {
+            this._kindSections.get(kind).actor.visible = i === this._page;
+        });
+        this._pager.show(this._page);
+    }
+
+    // Moves step pages on (wrapping around) and remembers the page for the
+    // next time the menu opens.
+    _turnPage(step) {
+        this._page = (this._page + step + KINDS.length) % KINDS.length;
+        this._showPage();
+        this._settings.set_string('menu-page', KINDS[this._page].kind);
+    }
+
+    // Sideways scrolling turns the page: a tilted wheel's left/right clicks
+    // one page each, a touchpad swipe one page per gesture once it has gone
+    // SWIPE_STEPS mostly sideways. With natural scrolling, sliding two
+    // fingers to the left brings the next page, as in the app grid. Vertical
+    // scrolling is left to the menu.
+    _onMenuScroll(event) {
+        // Clutter pairs each smooth event with an emulated discrete one (and
+        // the other way round); handle each scroll once.
+        if (event.get_flags() & Clutter.EventFlags.FLAG_POINTER_EMULATED)
+            return Clutter.EVENT_PROPAGATE;
+        switch (event.get_scroll_direction()) {
+        case Clutter.ScrollDirection.LEFT:
+            this._turnPage(-1);
+            return Clutter.EVENT_STOP;
+        case Clutter.ScrollDirection.RIGHT:
+            this._turnPage(1);
+            return Clutter.EVENT_STOP;
+        case Clutter.ScrollDirection.SMOOTH:
+            break;
+        default:
+            return Clutter.EVENT_PROPAGATE;
+        }
+
+        const swipe = this._swipe;
+        const time = event.get_time();
+        if (time - swipe.lastMs > SWIPE_GAP_MS)
+            Object.assign(swipe, {dx: 0, dy: 0, done: false});
+        swipe.lastMs = time;
+        const [dx, dy] = event.get_scroll_delta();
+        swipe.dx += dx;
+        swipe.dy += dy;
+        // Fingers lifted: the next movement is a new gesture.
+        const finished = event.get_scroll_finish_flags() !== Clutter.ScrollFinishFlags.NONE;
+        if (!swipe.done && Math.abs(swipe.dx) >= SWIPE_STEPS && Math.abs(swipe.dx) > Math.abs(swipe.dy)) {
+            swipe.done = true;
+            this._turnPage(swipe.dx > 0 ? 1 : -1);
+        }
+        const sideways = swipe.done || Math.abs(swipe.dx) > Math.abs(swipe.dy);
+        if (finished)
+            Object.assign(swipe, {dx: 0, dy: 0, done: false});
+        return sideways ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
     }
 
     _destroySections() {
@@ -834,6 +983,7 @@ class QuotaIndicator extends PanelMenu.Button {
             this._timer = null;
         }
         this.menu.disconnectObject(this);
+        this.menu.actor.disconnectObject(this);
         this._settings.disconnectObject(this);
         this._settings = null;
         this._settingsItem?.disconnectObject(this);
@@ -850,6 +1000,8 @@ class QuotaIndicator extends PanelMenu.Button {
         this._statusLabel = null;
         this._statusItem?.destroy();
         this._statusItem = null;
+        this._pager?.destroy();
+        this._pager = null;
         this._updated?.destroy();
         this._updated = null;
         this._refreshItem?.destroy();

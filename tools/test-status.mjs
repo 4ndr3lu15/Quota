@@ -187,6 +187,19 @@ test('overallStatus: Antigravity (agy) subscription limits participate alongside
         text: 'Nearly out: Gemini 3.1 Pro limit at 94%, resets in 2 h',
         percent: 94,
     });
+    const geminiOk = {
+        key: 'agy:Gemini Models:gemini-5h', label: 'Gemini Models · 5-hour limit', role: 'session',
+        utilization: 8, resetsAt: at(2 * H), totalSeconds: FIVE, apiLevel: 'ok',
+    };
+    const thirdPartyOut = {
+        key: 'agy:Claude and GPT models:3p-5h', label: 'Claude and GPT models · 5-hour limit', role: 'quota',
+        utilization: 100, resetsAt: at(80 * 60), totalSeconds: FIVE, apiLevel: 'crit',
+    };
+    assert.deepEqual(overallStatus([agy([geminiOk, thirdPartyOut])], NOW), {
+        state: 'out',
+        text: 'Out of tokens until 18:40',
+        percent: 100,
+    });
     assert.equal(overallStatus([agy([], 'signed-out')], NOW).text, 'Not signed in to Antigravity');
 });
 

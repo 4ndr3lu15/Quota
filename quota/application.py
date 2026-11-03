@@ -17,7 +17,7 @@ VERSION = "0.2"
 DATA = Path(__file__).resolve().parent.parent / "data"
 
 # the other Monolito apps, by link (never by import): Atelier launches them
-LINKS = tuple((f"Open {name}", f"atelier://launch/{name}") for name in ("Atelier", "MINITRON", "Tasks", "Conduit"))
+LINKS = tuple((f"Open {name}", f"atelier://launch/{name}") for name in ("Atelier", "MINITRON", "Tasks", "Harness"))
 
 SHORTCUTS = (
     ("Quota", (

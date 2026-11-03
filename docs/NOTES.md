@@ -11,22 +11,30 @@ out of the bundle.
 - `src/extension.js` — the indicator and its menu.
   - `QuotaIndicator` (a `PanelMenu.Button`): the top bar (a `MonolitoMark`,
     nothing else) and the menu, top to bottom: the status line (mark + the
-    state in words), one part per platform (`KINDS`: Claude, then
-    OpenRouter) holding a `SourceSection` per account and one Open Usage
-    Page row, or, with no account of that kind, its header and a quiet
-    "Add a Claude Account…" / "Add an OpenRouter Key…" row that opens
-    Settings on the Accounts page; then Refresh (with "Updated …"),
+    state in words, from every account on every page), the `Pager` row
+    (back/forward `icon-button flat`s around the platform's name, one dot
+    per page), then one page per platform (`KINDS`: Claude, Antigravity,
+    OpenRouter), only the current one shown, holding a `SourceSection` per
+    account and one Open Usage Page row, or, with no account of that kind,
+    a quiet "Add a Claude Account…" / "Add an OpenRouter Key…" row that
+    opens Settings on the Accounts page; then Refresh (with "Updated …"),
     Report…, Settings. `_reloadSources()` rebuilds the sections (cancelling
     any fetch in flight) when `profiles` or `openrouter-accounts` change.
     `_refresh()` polls every account at once; `_syncStatus()` runs
     `overallStatus()` over all of them after each answer and on the
     countdown tick, and sets the mark, the status line and the accessible
     name. Refresh is a `StayOpenItem`, which acts without closing the menu.
+    Pages wrap around and the current one is kept in `menu-page`.
+    `_onMenuScroll()` turns them on sideways scrolling anywhere on the menu:
+    a tilted wheel's left/right clicks one page each, a touchpad swipe one
+    page per gesture past `SWIPE_STEPS` (with natural scrolling, fingers to
+    the left bring the next page, as in the app grid); pointer-emulated
+    events are skipped and vertical scrolling is left alone.
   - `MonolitoMark` (a Cairo `St.DrawingArea`): paints `lib/mark.js` in its
     own foreground color, set by the state class, like a symbolic icon.
   - `SourceSection`: one account's part of the menu, whatever the platform:
-    a header (the platform's name, or "Claude · Work" when there are
-    several), the account line, one `Meter` per window keyed by window,
+    a header only when its page has several accounts (the account's name;
+    the pager already names the platform), the account line, one `Meter` per window keyed by window,
     info lines, error or signed-out note. `lastResult` (null while loading,
     then `ok` | `error` | `signed-out`) and the windows feed the status.
 - `src/lib/status.js` — pure judgement, no imports: `windowLevel()` judges a
@@ -86,8 +94,9 @@ out of the bundle.
 - `src/schemas/` — GSettings: `panel-position` + `panel-index`, `quota-toggle-menu` (`as`; keybinding
   names are global in the shell, so never a generic name like
   `toggle-menu`), `poll-seconds`, `profiles`, `profiles-initialized`,
-  `profile-tokens`, `openrouter-accounts`, and the internal `prefs-page`
-  (the Settings page the menu asks for). Recompile after
+  `profile-tokens`, `openrouter-accounts`, `agy-accounts`, `agy-initialized`,
+  and the internal `menu-page` (the platform the menu last showed) and
+  `prefs-page` (the Settings page the menu asks for). Recompile after
   edits: `./tools/compile-schemas.sh`.
 - `src/stylesheet.css`, `stylesheet-dark.css`, `stylesheet-light.css` —
   `quota-*` classes; see Design rules.

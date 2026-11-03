@@ -97,7 +97,7 @@ checks these mechanically. Getting them wrong fails review, so:
   in `disable()` (EGO-L-005). Prefer this over a `this._destroyed` flag; guard
   late async callbacks with a `Gio.Cancellable` that teardown cancels.
 
-Helper classes that own widgets (`Meter`, `SourceSection`) therefore each expose a `destroy()` that follows all three
+Helper classes that own widgets (`Meter`, `SourceSection`, `Pager`) therefore each expose a `destroy()` that follows all three
 rules; call it from the indicator's `destroy()`.
 
 ## Install (development)

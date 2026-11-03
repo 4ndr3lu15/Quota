@@ -156,19 +156,20 @@ function windowName(w) {
         return '5-hour limit';
     if (w.role === 'weekly')
         return 'weekly limit';
-    return `${w.label} limit`;
+    const label = String(w.label ?? '');
+    return label.toLowerCase().endsWith(' limit') ? label : `${label} limit`;
 }
 
 const usable = w => w && Number.isFinite(w.utilization);
 
-// One Claude account's state: the worst of its 5-hour and weekly windows
-// (per-model windows only block that model, so they color their own meter
-// but not the mark; an account that reports nothing else falls back to all
-// of its windows).
+// One Claude or Antigravity account's state: the worst of its non-scoped
+// windows (per-model scoped windows in Claude only block that model, so they
+// color their own meter but not the mark; an account that reports nothing
+// else falls back to all of its windows).
 //   {state, window, level, resetsAt}
 export function claudeAccountStatus(windows, now = Date.now()) {
     const all = (windows ?? []).filter(usable);
-    const main = all.filter(w => w.role === 'session' || w.role === 'weekly');
+    const main = all.filter(w => w.role !== 'scoped');
     const pool = main.length ? main : all;
     if (!pool.length)
         return null;

@@ -159,7 +159,15 @@ function normalizeBucket(b, groupName, multiGroup, index) {
         : String(cleanName);
     const id = b.bucketId ?? b.id ?? rawName ?? String(index);
     const key = groupName ? `agy:${groupName}:${id}` : `agy:${id}`;
-    const totalSeconds = parseWindowSeconds(b.window);
+    const bidLower = String(id).toLowerCase();
+    const cleanLower = cleanName.toLowerCase();
+    let totalSeconds = parseWindowSeconds(b.window);
+    if (!totalSeconds) {
+        if (bidLower.includes('5h') || cleanLower.includes('5-hour'))
+            totalSeconds = 5 * HOUR;
+        else if (bidLower.includes('weekly') || cleanLower.includes('weekly'))
+            totalSeconds = WEEK;
+    }
     const resetsAt = b.resetTime ?? b.reset_time ?? null;
     const remAmt = b.remainingAmount ?? b.remaining_amount;
     const detail = remAmt !== undefined && remAmt !== null && Number.isFinite(Number(remAmt))

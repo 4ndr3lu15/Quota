@@ -9,10 +9,12 @@ you can work:
   or budget spent);
 - **dim**: not known yet (loading, signed out, or an error).
 
-Click it for the details, every account at once: a status line that says
-the same thing in words ("Pace is tight: 5-hour limit resets in 1 h 20 min"),
-your Claude limits with their reset times, and your OpenRouter spend and
-balance.
+Click it for the details: a status line that says the same thing in words
+("Pace is tight: 5-hour limit resets in 1 h 20 min"), then one page per
+platform, Claude, Antigravity and OpenRouter, with every account of it: your
+Claude limits with their reset times, your Antigravity limits, your
+OpenRouter spend and balance. Turn the page with the arrows beside its name,
+or swipe sideways with two fingers; the menu opens on the page you left.
 
 Quota follows your shell: it uses the shell's own menus, your accent color,
 and the light or dark style. The color takes your current pace into account,

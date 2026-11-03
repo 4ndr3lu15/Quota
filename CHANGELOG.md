@@ -2,11 +2,17 @@
 
 ## Unreleased
 
+- 2026-11-03: Fall back to `agy -p /usage` in the Python app when Google Cloud Code HTTP returns 403, and include non-scoped Antigravity buckets (Claude/GPT group) in account status judgement.
+- **Pages in the menu**: one page per platform (Claude, Antigravity,
+  OpenRouter) instead of all of them in one long list. Turn the page with
+  the arrows beside its name or a sideways two-finger swipe; the dots show
+  where you are, and the menu opens on the page you left. The mark and the
+  status line still judge every account.
 - **The Quota app**: a GNOME window (GTK 4, libadwaita) with a Usage page
   (the status line, Claude limits and OpenRouter budgets with meters,
   OpenRouter spend, and MINITRON's model cost per day) and a Logs page
   (MINITRON's model calls by day and model, with prompt, time and cost).
-  Its main menu opens Atelier, MINITRON, Tasks and Conduit.
+  Its main menu opens Atelier, MINITRON, Tasks and Harness.
 - **Two colors**: the mark is green while you can work and red when out of
   tokens; the top bar no longer shows a percentage beside it.
 - **MINITRON's OpenRouter key**: with no OpenRouter account of its own,

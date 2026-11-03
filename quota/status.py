@@ -139,7 +139,8 @@ def _window_name(w):
         return "5-hour limit"
     if w["role"] == "weekly":
         return "weekly limit"
-    return f"{w['label']} limit"
+    label = str(w.get("label") or "")
+    return label if label.lower().endswith(" limit") else f"{label} limit"
 
 
 def _usable(w):
@@ -147,10 +148,10 @@ def _usable(w):
 
 
 def claude_account_status(windows, now=None):
-    """{state, window, level, resets_at} for one Claude account, or None with nothing to judge."""
+    """{state, window, level, resets_at} for one Claude or Antigravity account, or None with nothing to judge."""
     now = _now(now)
     everything = [w for w in windows or [] if _usable(w)]
-    main = [w for w in everything if w["role"] in ("session", "weekly")]
+    main = [w for w in everything if w["role"] != "scoped"]
     pool = main or everything
     if not pool:
         return None

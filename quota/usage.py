@@ -431,6 +431,11 @@ def normalize_agy(quota: dict | None, assist: dict | None = None, stored_token: 
         detail = f"{int(rem_amt)} left" if rem_amt is not None else None
         bid_lower = str(bid).lower()
         clean_lower = clean_name.lower()
+        if total is None:
+            if "5h" in bid_lower or "5-hour" in clean_lower:
+                total = FIVE_HOURS
+            elif "weekly" in bid_lower or "weekly" in clean_lower:
+                total = WEEK
         is_primary = not group_name or bool(re.match(r"^gemini(\s+models)?$", str(group_name), flags=re.IGNORECASE))
         if bid_lower == "gemini-5h" or (is_primary and clean_lower in ("5-hour session", "5-hour limit", "session") and total == FIVE_HOURS):
             role = "session"
@@ -557,10 +562,10 @@ def fetch_agy(account: dict, lookup=None) -> dict:
         except UsageError:
             pass
 
+    last_err = None
     if token:
         headers = {"Authorization": f"Bearer {token}"}
         assist = None
-        last_err = None
         for base in AGY_ENDPOINTS:
             try:
                 assist = http_post(f"{base}/v1internal:loadCodeAssist",
@@ -583,12 +588,6 @@ def fetch_agy(account: dict, lookup=None) -> dict:
                 last_err = err
                 if err.status in (401, 403):
                     break
-        if last_err:
-            if last_err.status == 401:
-                raise UsageError("Google session expired. Run `agy auth login` to sign in again.", 401) from None
-            if last_err.status == 429:
-                raise UsageError("Google is rate limiting quota checks. Trying again shortly.", 429) from None
-            raise last_err
 
     usage_cli = _run_agy_cli("/usage", config_dir)
     credits_cli = _run_agy_cli("/credits", config_dir)
@@ -596,5 +595,12 @@ def fetch_agy(account: dict, lookup=None) -> dict:
         res = normalize_agy(usage_cli or {}, credits_cli or {}, stored)
         if res["windows"] or res["plan"] or res["note"]:
             return res
+
+    if last_err:
+        if last_err.status == 401:
+            raise UsageError("Google session expired. Run `agy auth login` to sign in again.", 401) from None
+        if last_err.status == 429:
+            raise UsageError("Google is rate limiting quota checks. Trying again shortly.", 429) from None
+        raise last_err
 
     raise SignedOut("Not signed in. Run `agy auth login` in a terminal to connect your Google subscription.")

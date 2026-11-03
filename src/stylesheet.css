@@ -37,9 +37,46 @@
     max-width: 19em;
 }
 
+/* The pager: the shell's flat icon buttons, a little smaller, around the
+   platform's name, and one dot per page (the current one in the accent
+   color, like the meters). The row is as wide as a meter, so the menu keeps
+   its width when a page has none. */
+.quota-pager {
+    min-width: 17em;
+}
+.quota-pager-button {
+    padding: 6px;
+    min-height: 0;
+}
+.quota-pager-button StIcon {
+    icon-size: 16px;
+}
+.quota-pager-middle {
+    spacing: 4px;
+}
+.quota-pager-title {
+    font-weight: bold;
+}
+.quota-pager-dots {
+    spacing: 6px;
+}
+.quota-pager-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 99px;
+    background-color: rgba(128, 128, 128, 0.4);
+}
+.quota-pager-dot.quota-current {
+    background-color: #3584e4;
+    background-color: -st-accent-color;
+}
+
 .quota-meter {
     min-width: 17em;
     spacing: 6px;
+}
+.quota-meter-row {
+    spacing: 12px;
 }
 .quota-meter-pct {
     font-feature-settings: "tnum";

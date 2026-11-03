@@ -149,3 +149,12 @@ def test_normalize_agy_and_fetch(tmp_path, monkeypatch):
     fetched = usage.fetch_agy({"id": "agy", "label": "Google AI", "config_dir": tmp_path})
     assert fetched["plan"] == "Google AI Pro"
     assert fetched["windows"][0]["utilization"] == 25.0
+
+    # When HTTP fails (e.g. 403 on standalone consumer accounts), fall back to `agy -p /usage`.
+    def fail_post(url, body, headers, timeout=15):
+        raise usage.UsageError("HTTP 403", 403)
+    monkeypatch.setattr(usage, "http_post", fail_post)
+    monkeypatch.setattr(usage, "_run_agy_cli", lambda cmd, d=None: {"command": {"name": "usage", "data": quota}} if cmd == "/usage" else None)
+    fallback = usage.fetch_agy({"id": "agy", "label": "Google AI", "config_dir": tmp_path})
+    assert fallback["windows"][0]["utilization"] == 25.0
+

@@ -66,6 +66,16 @@
     </key>
 
     <!-- Internal -->
+    <key name="menu-page" type="s">
+      <choices>
+        <choice value="claude"/>
+        <choice value="agy"/>
+        <choice value="openrouter"/>
+      </choices>
+      <default>'claude'</default>
+      <summary>Platform the menu shows</summary>
+      <description>The page last turned to in the menu, so it opens on the same platform again.</description>
+    </key>
     <key name="prefs-page" type="s">
       <default>''</default>
       <summary>Settings page to open</summary>
