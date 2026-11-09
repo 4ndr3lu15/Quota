@@ -158,3 +158,18 @@ def test_normalize_agy_and_fetch(tmp_path, monkeypatch):
     fallback = usage.fetch_agy({"id": "agy", "label": "Google AI", "config_dir": tmp_path})
     assert fallback["windows"][0]["utilization"] == 25.0
 
+
+
+def test_an_expired_agy_token_goes_to_agy_itself(tmp_path, monkeypatch):
+    """Quota carries no Google OAuth client: an expired token is never refreshed here, `agy` does it."""
+    quota = {"groups": [{"displayName": "Models", "buckets": [
+        {"bucketId": "pro", "displayName": "Gemini 3.1 Pro", "window": "5h", "remainingFraction": 0.5}]}]}
+    (tmp_path / "antigravity-oauth-token").write_text(json.dumps({"token": {
+        "access_token": "old", "refresh_token": "r", "expiry": "2020-01-01T00:00:00Z"}}))
+    posted = []
+    monkeypatch.setattr(usage, "http_post", lambda url, *a, **k: posted.append(url) or {})
+    monkeypatch.setattr(usage, "_run_agy_cli",
+                        lambda cmd, d=None: {"command": {"name": "usage", "data": quota}} if cmd == "/usage" else None)
+    fetched = usage.fetch_agy({"id": "agy", "label": "Google AI", "config_dir": tmp_path})
+    assert posted == [] and fetched["windows"][0]["utilization"] == 50.0
+    assert not hasattr(usage, "AGY_CLIENT_SECRET")

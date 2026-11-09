@@ -1,31 +1,21 @@
 // The Google Antigravity (agy) source: reads the Google AI / Antigravity
 // OAuth credentials from ~/.gemini/antigravity-cli/antigravity-oauth-token,
 // ~/.gemini/jetski-standalone-oauth-token, or the system keyring (go-keyring
-// service="gemini"), refreshes the Google OAuth token when needed, and fetches
-// subscription tier, Google One AI credits, and quota buckets from the Cloud
-// Code internal API (or via `agy -p /usage --output-format json` fallback).
+// service="gemini"), and fetches subscription tier, Google One AI credits, and
+// quota buckets from the Cloud Code internal API. Quota never refreshes the
+// Google token itself (that needs Google's OAuth client, which isn't ours to
+// carry): an expired token goes to `agy -p /usage --output-format json`, which
+// refreshes and saves it, so the next check reads the API directly again.
 // No shell imports.
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Soup from 'gi://Soup';
 
 import {UsageError, SignedOutError} from '../usageClient.js';
-import {getToken, setToken} from '../tokenStore.js';
+import {getToken} from '../tokenStore.js';
 import {lookupAgyToken} from '../secrets.js';
 import {normalizeAgy, tierLabel} from '../agyModel.js';
 
-export const AGY_CLIENT_ID = '';
-export const AGY_CLIENT_SECRET = '';
-export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-export const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-export const AGY_SCOPES = [
-    'https://www.googleapis.com/auth/cloud-platform',
-    'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/userinfo.profile',
-    'https://www.googleapis.com/auth/cclog',
-    'https://www.googleapis.com/auth/experimentsandconfigs',
-    'openid',
-].join(' ');
 
 const ENDPOINTS = [
     'https://daily-cloudcode-pa.googleapis.com',
@@ -205,68 +195,13 @@ export class AgyProvider {
         });
     }
 
-    async _refreshGoogleToken(refreshToken, cancellable) {
-        const data = await this._request('POST', GOOGLE_TOKEN_URL, {
-            cancellable,
-            jsonBody: {
-                grant_type: 'refresh_token',
-                refresh_token: refreshToken,
-                client_id: AGY_CLIENT_ID,
-                client_secret: AGY_CLIENT_SECRET,
-            },
-        });
-        if (!data.access_token)
-            throw new UsageError('Google token refresh missing access_token');
-        return data;
-    }
-
     async _resolveToken(cancellable) {
+        const fresh = tok => tok?.accessToken && (!tok.expiresAt || tok.expiresAt - Date.now() > REFRESH_SKEW_MS);
         const stored = await readAgyStoredToken(this._configDir, cancellable);
-        if (stored) {
-            if (stored.accessToken && (!stored.expiresAt || stored.expiresAt - Date.now() > REFRESH_SKEW_MS))
-                return stored;
-            if (stored.refreshToken) {
-                const refreshed = await this._refreshGoogleToken(stored.refreshToken, cancellable);
-                stored.accessToken = refreshed.access_token;
-                if (refreshed.id_token)
-                    stored.idToken = refreshed.id_token;
-                if (refreshed.expires_in) {
-                    const expiryIso = new Date(Date.now() + refreshed.expires_in * 1000).toISOString();
-                    if (stored.raw.token && typeof stored.raw.token === 'object') {
-                        stored.raw.token.access_token = refreshed.access_token;
-                        stored.raw.token.expiry = expiryIso;
-                    } else {
-                        stored.raw.access_token = refreshed.access_token;
-                        stored.raw.expiry = expiryIso;
-                    }
-                }
-                if (stored.path) {
-                    try {
-                        await writeJsonFile(stored.path, stored.raw);
-                    } catch {
-                        // Best-effort persistence.
-                    }
-                }
-                return stored;
-            }
-        }
-
+        if (stored)
+            return fresh(stored) ? stored : null;    // expired: `agy` refreshes it (fetch's fallback)
         const inApp = this._settings ? getToken(this._settings, this.source.id) : null;
-        if (inApp) {
-            if (inApp.expiresAt && inApp.expiresAt - Date.now() <= REFRESH_SKEW_MS && inApp.refreshToken) {
-                const refreshed = await this._refreshGoogleToken(inApp.refreshToken, cancellable);
-                const expiresAt = Date.now() + (refreshed.expires_in ?? 3600) * 1000;
-                setToken(this._settings, this.source.id, {
-                    accessToken: refreshed.access_token,
-                    refreshToken: refreshed.refresh_token || inApp.refreshToken,
-                    expiresAt,
-                });
-                return {accessToken: refreshed.access_token, raw: {}};
-            }
-            return {accessToken: inApp.accessToken, raw: {}};
-        }
-
-        return null;
+        return fresh(inApp) ? {accessToken: inApp.accessToken, raw: {}} : null;
     }
 
     async _postInternal(path, token, body, cancellable) {

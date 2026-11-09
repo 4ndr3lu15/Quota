@@ -51,3 +51,4 @@ First release.
   styles, and the top bar gauge is drawn in the panel's text color like a
   symbolic icon. Colors only appear when a limit is getting close.
 - **Few settings**: preferences are two pages, General and Accounts.
+- 2026-11-09: Antigravity: Quota no longer carries Google's OAuth client to refresh tokens itself; an expired token goes to `agy`, which refreshes and saves it. The client's values are removed from history too, so the repository can be pushed (GitHub's push protection).

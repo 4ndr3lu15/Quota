@@ -26,9 +26,6 @@ KEY_URL = "https://openrouter.ai/api/v1/key"
 CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 OPENROUTER_PAGE = "https://openrouter.ai/activity"
 AGY_PAGE = "https://one.google.com/ai"
-GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-AGY_CLIENT_ID = ""
-AGY_CLIENT_SECRET = ""
 AGY_ENDPOINTS = ("https://daily-cloudcode-pa.googleapis.com", "https://cloudcode-pa.googleapis.com")
 
 FIVE_HOURS = 5 * 3600
@@ -546,21 +543,12 @@ def fetch_agy(account: dict, lookup=None) -> dict:
     stored = read_agy_credentials(config_dir, lookup=lookup)
     tok_block = (stored or {}).get("token") if isinstance((stored or {}).get("token"), dict) else (stored or {})
     token = tok_block.get("access_token") or tok_block.get("accessToken") or account.get("token")
-    refresh_tok = tok_block.get("refresh_token") or tok_block.get("refreshToken")
     exp = parse_time(tok_block.get("expiry") or tok_block.get("expiresAt"))
-
-    if refresh_tok and (not token or (exp is not None and exp - time.time() < 300)):
-        try:
-            refreshed = http_post(GOOGLE_TOKEN_URL, {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_tok,
-                "client_id": AGY_CLIENT_ID,
-                "client_secret": AGY_CLIENT_SECRET,
-            }, {})
-            if refreshed.get("access_token"):
-                token = refreshed["access_token"]
-        except UsageError:
-            pass
+    # Quota never refreshes Antigravity's token itself (that needs Google's OAuth client, which isn't
+    # ours to carry): an expired token goes to `agy` below, which refreshes and saves it, so the next
+    # check reads the API directly again.
+    if exp is not None and exp - time.time() < 300:
+        token = None
 
     last_err = None
     if token:
